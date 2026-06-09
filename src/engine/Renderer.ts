@@ -40,6 +40,12 @@ export interface RendererOptions {
   createRenderer?: (canvas: HTMLCanvasElement) => GLRenderer;
   /** Monotonic clock in milliseconds. Defaults to `performance.now`. */
   now?: () => number;
+  /**
+   * Called once per rendered frame with the same elapsed/delta the active scene
+   * receives. Useful for lightweight instrumentation (e.g. an FPS overlay)
+   * without coupling the loop to the UI.
+   */
+  onFrame?: (elapsed: number, delta: number) => void;
 }
 
 /** Clamp a device-pixel-ratio into the `[1, max]` range. */
@@ -69,6 +75,7 @@ export class Renderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly maxPixelRatio: number;
   private readonly now: () => number;
+  private readonly onFrame?: (elapsed: number, delta: number) => void;
 
   private readonly gl: GLRenderer;
   private readonly scene: THREE.Scene;
@@ -93,6 +100,7 @@ export class Renderer {
     this.canvas = canvas;
     this.maxPixelRatio = options.maxPixelRatio ?? DEFAULT_MAX_PIXEL_RATIO;
     this.now = options.now ?? (() => performance.now());
+    this.onFrame = options.onFrame;
 
     const create = options.createRenderer ?? defaultCreateRenderer;
     this.gl = create(canvas);
@@ -187,6 +195,7 @@ export class Renderer {
 
     this.activeScene?.update(elapsed, delta);
     this.gl.render(this.scene, this.camera);
+    this.onFrame?.(elapsed, delta);
 
     if (this.running) this.scheduleNext();
   }

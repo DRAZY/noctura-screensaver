@@ -129,6 +129,33 @@ describe("Renderer", () => {
     expect(calls.setSize.at(-1)).toEqual([1600, 768]);
   });
 
+  test("invokes the onFrame callback once per frame with elapsed + delta", () => {
+    const { gl } = makeFakeGL();
+    let clock = 1000;
+    const frames: Array<[number, number]> = [];
+    const renderer = new Renderer(makeCanvas(), {
+      createRenderer: () => gl,
+      now: () => clock,
+      onFrame: (elapsed, delta) => frames.push([elapsed, delta]),
+    });
+    renderer.setScene(makeScene());
+
+    renderer.start(); // startTime = lastTime = 1000
+    clock = 1016;
+    renderer.frame();
+    clock = 1032;
+    renderer.frame();
+
+    expect(frames).toHaveLength(2);
+    expect(frames[0][0]).toBeCloseTo(0.016, 5);
+    expect(frames[1][0]).toBeCloseTo(0.032, 5);
+
+    // No callback fires once the loop is stopped.
+    renderer.stop();
+    renderer.frame();
+    expect(frames).toHaveLength(2);
+  });
+
   test("dispose() stops the loop and releases scene + GL resources", () => {
     const { gl, calls } = makeFakeGL();
     const renderer = new Renderer(makeCanvas(), { createRenderer: () => gl, now: () => 0 });

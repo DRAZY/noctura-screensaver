@@ -1,50 +1,66 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useEffect, useRef, useState } from "react";
+import { Renderer } from "./engine/Renderer";
+import { AmbientGradient } from "./scenes/AmbientGradient";
+import { computeFps } from "./ui/fps";
 
+/** Human-readable name of the active scene, surfaced in the dev overlay. */
+const SCENE_NAME = "AmbientGradient";
+
+/**
+ * Root shell: a single full-viewport `<canvas>` with no UI chrome. On mount it
+ * spins up the WebGL `Renderer`, installs the `AmbientGradient` scene, and runs
+ * the loop; on unmount it tears everything down. A dim FPS/scene HUD renders in
+ * the corner only in dev builds.
+ */
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [fps, setFps] = useState(0);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // Per-frame counter sampled by the overlay timer below. A plain closure var
+    // (not state) keeps the 60Hz render loop from triggering 60 React
+    // re-renders a second.
+    let frameCount = 0;
+
+    const renderer = new Renderer(canvas, {
+      onFrame: () => {
+        frameCount += 1;
+      },
+    });
+    renderer.setScene(new AmbientGradient());
+    renderer.start();
+
+    // Sample FPS once per second — only worth the timer in dev.
+    let fpsTimer: ReturnType<typeof setInterval> | undefined;
+    if (import.meta.env.DEV) {
+      let lastSample = performance.now();
+      fpsTimer = setInterval(() => {
+        const now = performance.now();
+        const seconds = (now - lastSample) / 1000;
+        lastSample = now;
+        setFps(computeFps(frameCount, seconds));
+        frameCount = 0;
+      }, 1000);
+    }
+
+    return () => {
+      if (fpsTimer !== undefined) clearInterval(fpsTimer);
+      renderer.dispose();
+    };
+  }, []);
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+    <>
+      <canvas ref={canvasRef} />
+      {import.meta.env.DEV && (
+        <div className="dev-overlay">
+          {SCENE_NAME} · {fps} fps
+        </div>
+      )}
+    </>
   );
 }
 

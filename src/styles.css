@@ -1,0 +1,33 @@
+/* Fullscreen, chromeless host for the screensaver canvas. The window itself is
+   borderless/fullscreen (see tauri.conf.json); these rules make the web layer
+   edge-to-edge black so the WebGL scene is the only thing visible. */
+html,
+body,
+#root,
+canvas {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #000000;
+}
+
+canvas {
+  display: block;
+}
+
+/* Dim, monospace dev HUD pinned to the corner. Rendered only under import.meta.env.DEV. */
+.dev-overlay {
+  position: fixed;
+  bottom: 8px;
+  left: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+  user-select: none;
+  z-index: 10;
+}
