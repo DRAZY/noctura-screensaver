@@ -1,0 +1,359 @@
+/* Frosted-glass dark gallery/settings panel that slides in over the live
+   canvas. Restrained and legible — it never competes with the visuals. */
+
+.settings-toggle {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 20;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(20, 22, 30, 0.45);
+  color: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  font-size: 18px;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.2s;
+}
+.settings-toggle:hover {
+  background: rgba(40, 44, 56, 0.7);
+  transform: rotate(30deg);
+}
+
+.settings-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 380px;
+  max-width: 92vw;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 20px 22px;
+  box-sizing: border-box;
+  color: #eef0f7;
+  background: rgba(14, 16, 22, 0.72);
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: -20px 0 60px rgba(0, 0, 0, 0.45);
+  transform: translateX(105%);
+  transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  overflow-y: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.settings-panel.open {
+  transform: translateX(0);
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.settings-header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  margin: 0;
+}
+.settings-close {
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 16px;
+  cursor: pointer;
+}
+.settings-close:hover {
+  color: #fff;
+}
+
+.settings-section {
+  margin-top: 14px;
+}
+.settings-section h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: rgba(255, 255, 255, 0.4);
+  margin: 0 0 10px;
+}
+
+/* Scene gallery cards */
+.scene-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.scene-card {
+  position: relative;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  transition: border-color 0.18s, background 0.18s, transform 0.18s;
+}
+.scene-card:hover {
+  background: rgba(255, 255, 255, 0.07);
+  transform: translateY(-1px);
+}
+.scene-card.active {
+  border-color: rgba(120, 170, 255, 0.9);
+  background: rgba(80, 120, 220, 0.16);
+}
+.scene-card-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  padding: 8px;
+  background: transparent;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+.scene-fav {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.35);
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, transform 0.15s;
+}
+.scene-fav:hover {
+  background: rgba(0, 0, 0, 0.55);
+  transform: scale(1.12);
+}
+.scene-fav.active {
+  color: #ffd34d;
+}
+.scene-swatch {
+  width: 100%;
+  height: 52px;
+  border-radius: 8px;
+}
+.scene-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+.scene-desc {
+  font-size: 11px;
+  line-height: 1.3;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* Parameter controls */
+.param-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.param-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.param-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+}
+.param-control {
+  display: flex;
+  align-items: center;
+}
+.range-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+.range-wrap input[type="range"] {
+  flex: 1;
+  accent-color: #7aa6ff;
+}
+.range-value {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  min-width: 38px;
+  text-align: right;
+}
+.param-control input[type="color"] {
+  width: 44px;
+  height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.seg {
+  padding: 5px 10px;
+  font-size: 11px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+}
+.seg:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+.seg.active {
+  border-color: rgba(120, 170, 255, 0.9);
+  background: rgba(80, 120, 220, 0.25);
+  color: #fff;
+}
+
+.param-reset {
+  margin-top: 4px;
+  padding: 8px;
+  font-size: 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+}
+.param-reset:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.settings-footer {
+  margin-top: auto;
+  padding-top: 16px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+.settings-footer kbd {
+  font-family: ui-monospace, Menlo, monospace;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* Playback / preferences controls */
+.playback-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.control-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.control-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+}
+.control-row input[type="range"] {
+  width: 100%;
+  accent-color: #7aa6ff;
+}
+.toggle-row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.toggle-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #7aa6ff;
+  cursor: pointer;
+}
+.segmented-row {
+  gap: 8px;
+}
+
+/* Clock overlay (drawn on top of the active scene) */
+.clock-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 5;
+  text-shadow: 0 2px 24px rgba(0, 0, 0, 0.6);
+}
+.clock-time {
+  font-size: clamp(56px, 12vw, 168px);
+  font-weight: 200;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.94);
+  line-height: 1;
+}
+.clock-date {
+  margin-top: 10px;
+  font-size: clamp(16px, 2.4vw, 30px);
+  font-weight: 300;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+/* About card (creator credit + app summary) */
+.about-card {
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.78);
+}
+.about-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.95);
+  margin: 0;
+}
+.about-version {
+  margin: 2px 0 10px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  font-variant-numeric: tabular-nums;
+}
+.about-desc {
+  margin: 0 0 10px;
+}
+.about-credit {
+  margin: 0 0 8px;
+  color: rgba(255, 255, 255, 0.9);
+}
+.about-credit strong {
+  color: #9ff5ff;
+  font-weight: 600;
+}
+.about-fine {
+  margin: 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.45);
+}
+.about-card code {
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+}

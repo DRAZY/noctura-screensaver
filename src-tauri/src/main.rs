@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    aurora_screensaver_lib::run()
+    noctura_lib::run()
 }

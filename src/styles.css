@@ -15,6 +15,12 @@ canvas {
 
 canvas {
   display: block;
+  /* Promote the WebGL canvas to its own compositor layer so WKWebView presents
+     it as a single GPU surface (synced to the page), rather than tiling a large
+     backing store across surfaces that can refresh out of step and tear. */
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  will-change: transform;
 }
 
 /* Dim, monospace dev HUD pinned to the corner. Rendered only under import.meta.env.DEV. */

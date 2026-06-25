@@ -1,0 +1,36 @@
+[package]
+name = "noctura-scr"
+version = "0.1.0"
+edition = "2021"
+description = "Noctura — native Windows Direct3D 11 screensaver (.scr)"
+
+# The screensaver binary. Windows treats any PE that handles /s /p /c as a
+# screensaver once it has the .scr extension; the build script renames it.
+[[bin]]
+name = "noctura"
+path = "src/main.rs"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_System_Registry",
+    "Win32_Security",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Controls",
+]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

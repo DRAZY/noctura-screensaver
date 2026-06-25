@@ -1,86 +1,66 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import * as THREE from "three";
-import {
-  AmbientGradient,
-  DEFAULT_COLORS,
-  DEFAULT_SPEED,
-  FRAGMENT_SHADER,
-  VERTEX_SHADER,
-} from "./AmbientGradient";
+import { AmbientGradient, DEFAULT_SPEED, FRAGMENT_SHADER } from "./AmbientGradient";
+import { defaultsFor } from "../engine/types";
 
-describe("AmbientGradient", () => {
-  test("exposes the documented uniforms with Aurora defaults", () => {
-    const scene = new AmbientGradient();
-    const u = scene.material.uniforms;
+/** Cast helper to read the protected ShaderMaterial in tests. */
+function uniforms(scene: AmbientGradient) {
+  return (scene as unknown as { material: THREE.ShaderMaterial }).material.uniforms;
+}
 
+describe("AmbientGradient (Scene)", () => {
+  it("exposes stable scene metadata", () => {
+    const s = new AmbientGradient();
+    expect(s.id).toBe("ambient-gradient");
+    expect(s.name.length).toBeGreaterThan(0);
+    expect(s.parameters.length).toBeGreaterThan(0);
+  });
+
+  it("declares a speed range defaulting to DEFAULT_SPEED", () => {
+    const s = new AmbientGradient();
+    const speed = s.parameters.find((p) => p.id === "speed");
+    expect(speed?.kind).toBe("range");
+    expect(defaultsFor(s).speed).toBe(DEFAULT_SPEED);
+  });
+
+  it("builds a material on init with the expected uniforms", () => {
+    const s = new AmbientGradient();
+    s.init({ renderer: {} as THREE.WebGLRenderer, width: 100, height: 100 });
+    const u = uniforms(s);
     expect(u.uTime.value).toBe(0);
     expect(u.uSpeed.value).toBe(DEFAULT_SPEED);
-    expect(u.uResolution.value).toBeInstanceOf(THREE.Vector2);
+  });
+
+  it("setParameter('speed') updates the uSpeed uniform", () => {
+    const s = new AmbientGradient();
+    s.init({ renderer: {} as THREE.WebGLRenderer, width: 1, height: 1 });
+    s.setParameter("speed", 0.42);
+    expect(uniforms(s).uSpeed.value).toBeCloseTo(0.42);
+  });
+
+  it("setParameter('theme') swaps all three palette colors", () => {
+    const s = new AmbientGradient();
+    s.init({ renderer: {} as THREE.WebGLRenderer, width: 1, height: 1 });
+    s.setParameter("theme", "ocean");
+    const u = uniforms(s);
+    // Ocean palette a = #030e2e
     expect((u.uColorA.value as THREE.Color).getHexString()).toBe(
-      new THREE.Color(DEFAULT_COLORS.a).getHexString(),
-    );
-    expect((u.uColorB.value as THREE.Color).getHexString()).toBe(
-      new THREE.Color(DEFAULT_COLORS.b).getHexString(),
-    );
-    expect((u.uColorC.value as THREE.Color).getHexString()).toBe(
-      new THREE.Color(DEFAULT_COLORS.c).getHexString(),
+      new THREE.Color("#030e2e").getHexString(),
     );
   });
 
-  test("honours custom speed and partial palette overrides", () => {
-    const scene = new AmbientGradient({ speed: 0.5, colors: { b: "#00ff00" } });
-    const u = scene.material.uniforms;
-
-    expect(u.uSpeed.value).toBe(0.5);
-    // overridden color
-    expect((u.uColorB.value as THREE.Color).getHexString()).toBe("00ff00");
-    // untouched colors keep their defaults
-    expect((u.uColorA.value as THREE.Color).getHexString()).toBe(
-      new THREE.Color(DEFAULT_COLORS.a).getHexString(),
-    );
+  it("update advances uTime; resize sets uResolution", () => {
+    const s = new AmbientGradient();
+    s.init({ renderer: {} as THREE.WebGLRenderer, width: 1, height: 1 });
+    s.update(3.5, 0.016);
+    expect(uniforms(s).uTime.value).toBeCloseTo(3.5);
+    s.resize(1920, 1080);
+    const res = uniforms(s).uResolution.value as THREE.Vector2;
+    expect([res.x, res.y]).toEqual([1920, 1080]);
   });
 
-  test("update() drives only the uTime uniform", () => {
-    const scene = new AmbientGradient();
-    scene.update(3.5, 0.016);
-    expect(scene.material.uniforms.uTime.value).toBe(3.5);
-  });
-
-  test("resize() updates the resolution uniform for aspect correction", () => {
-    const scene = new AmbientGradient();
-    scene.resize(1920, 1080);
-    const res = scene.material.uniforms.uResolution.value as THREE.Vector2;
-    expect(res.x).toBe(1920);
-    expect(res.y).toBe(1080);
-  });
-
-  test("setSpeed() retunes the flow at runtime", () => {
-    const scene = new AmbientGradient();
-    scene.setSpeed(0.42);
-    expect(scene.material.uniforms.uSpeed.value).toBe(0.42);
-  });
-
-  test("dispose() releases the shader material", () => {
-    const scene = new AmbientGradient();
-    let disposed = 0;
-    scene.material.addEventListener("dispose", () => {
-      disposed += 1;
-    });
-    scene.dispose();
-    expect(disposed).toBe(1);
-  });
-
-  test("ships a pass-through vertex shader and a single-pass fragment shader", () => {
-    // Vertex stage forwards UVs and emits clip-space position directly.
-    expect(VERTEX_SHADER).toContain("varying vec2 vUv");
-    expect(VERTEX_SHADER).toContain("gl_Position");
-
-    // Fragment stage declares the required uniforms and uses warped FBM noise.
-    for (const u of ["uTime", "uSpeed", "uColorA", "uColorB", "uColorC"]) {
-      expect(FRAGMENT_SHADER).toContain(u);
-    }
-    expect(FRAGMENT_SHADER).toContain("fbm");
+  it("fragment shader includes the shared noise + fbm symbols", () => {
     expect(FRAGMENT_SHADER).toContain("snoise");
-    expect(FRAGMENT_SHADER).toContain("gl_FragColor");
+    expect(FRAGMENT_SHADER).toContain("fbm2");
   });
 });

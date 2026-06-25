@@ -12,6 +12,17 @@ dist
 dist-ssr
 *.local
 
+# Rust / Cargo build output (large; rebuilt from source)
+target/
+**/target/
+
+# Native macOS .saver build output (rebuilt by native-saver/build.sh)
+native-saver/build/
+
+# Built release artifacts are published via GitHub Releases, not committed
+*.dmg
+*.scr
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
