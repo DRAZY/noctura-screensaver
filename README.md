@@ -17,8 +17,7 @@ Grab the latest build from the [**Releases**](../../releases/latest) page.
 | **macOS** (Apple Silicon) | `Noctura_<ver>_aarch64.dmg` | Smallest; M-series Macs |
 | **macOS** (Intel + Apple Silicon) | `Noctura_<ver>_universal.dmg` | Works on any Mac |
 | **macOS screensaver** | `Noctura.saver.zip` | Installs into System Settings → Screen Saver |
-| **Windows** (64-bit) | `Noctura-Windows-x64.zip` | Most PCs — includes installer |
-| **Windows** (ARM64) | `Noctura-Windows-arm64.zip` | Surface Pro X, Snapdragon laptops |
+| **Windows** (x64 + ARM64) | `Noctura-Windows.zip` | Installer auto-detects your CPU; includes both builds |
 
 > Builds are unsigned. macOS: right-click → Open the first time. Windows: SmartScreen → More info → Run anyway.
 
