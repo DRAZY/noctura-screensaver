@@ -442,9 +442,9 @@ float3 sceneSynthwave(float2 uv, float aspect) {
         float persp = 0.10 / (zy + 0.0025);
         float gx = (uv.x - 0.5) * aspect * persp * 3.5;
         float gz = persp * 5.0 - t * 2.0;
-        float line = max(synthGridLine(gx), synthGridLine(gz));
+        float gridLines = max(synthGridLine(gx), synthGridLine(gz));
         float fade = smoothstep(0.0, 0.16, zy);
-        col += uColorC.rgb * line * fade * 1.3;
+        col += uColorC.rgb * gridLines * fade * 1.3;
         col += uColorB.rgb * smoothstep(0.16, 0.0, abs(uv.x - 0.5) * aspect) * smoothstep(0.0, 0.4, zy) * 0.15;
     }
     col += uColorB.rgb * smoothstep(0.03, 0.0, abs(uv.y - HORIZON)) * 1.4;
@@ -509,8 +509,8 @@ float cCausticLayer(float2 p, float t, float sharp) {
     float2 w = cWorley(p, t);
     float border = w.y - w.x;
     float aa = fwidth(border) + 1e-4;
-    float line = 1.0 - smoothstep(0.0, 0.07 + aa, border);
-    return pow(clamp(line, 0.0, 1.0), sharp);
+    float edge = 1.0 - smoothstep(0.0, 0.07 + aa, border);
+    return pow(clamp(edge, 0.0, 1.0), sharp);
 }
 float3 sceneCaustics(float2 uv0, float aspect) {
     float2 uv = float2((uv0.x - 0.5) * aspect, uv0.y - 0.5);

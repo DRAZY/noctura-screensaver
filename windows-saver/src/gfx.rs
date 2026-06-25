@@ -84,6 +84,22 @@ unsafe fn compile(entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
         &mut blob,
         Some(&mut errors),
     );
+    if hr.is_err() {
+        // Surface the compiler's message — the single most useful thing to have
+        // when a shader fails to build on a user's GPU/driver.
+        if let Some(err_blob) = &errors {
+            let bytes = std::slice::from_raw_parts(
+                err_blob.GetBufferPointer() as *const u8,
+                err_blob.GetBufferSize(),
+            );
+            crate::log::line(&format!(
+                "D3DCompile failed: {}",
+                String::from_utf8_lossy(bytes).trim_end()
+            ));
+        } else {
+            crate::log::line("D3DCompile failed (no error blob)");
+        }
+    }
     hr?;
     blob.ok_or_else(|| Error::from_win32())
 }
@@ -108,6 +124,7 @@ impl Gfx {
                 Some(&mut context),
             );
             if hw.is_err() {
+                crate::log::line("hardware device failed; falling back to WARP");
                 D3D11CreateDevice(
                     None,
                     D3D_DRIVER_TYPE_WARP,

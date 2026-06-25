@@ -15,6 +15,7 @@
 
 mod config;
 mod gfx;
+mod log;
 mod settings;
 
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -48,16 +49,32 @@ enum Mode {
 }
 
 fn main() {
-    let mode = parse_mode(&std::env::args().skip(1).collect::<Vec<_>>());
+    log::reset();
+    let argv: Vec<String> = std::env::args().collect();
+    log::line(&format!("start argv={argv:?}"));
+    let args: Vec<String> = argv.iter().skip(1).cloned().collect();
+    let mode = parse_mode(&args);
     let result = match mode {
         Mode::Config(owner) => {
+            log::line(&format!("mode=config owner={owner:?}"));
             config::show_config(owner);
             Ok(())
         }
-        Mode::Preview(hwnd) => run_preview(HWND(hwnd as *mut _)),
-        Mode::Saver => run_saver(),
+        Mode::Preview(hwnd) => {
+            log::line(&format!("mode=preview hwnd={hwnd}"));
+            run_preview(HWND(hwnd as *mut _))
+        }
+        Mode::Saver => {
+            log::line("mode=saver");
+            run_saver()
+        }
     };
     // A failed graphics init should never hang a screensaver — just exit.
+    if let Err(e) = &result {
+        log::line(&format!("exited with error: {e:?}"));
+    } else {
+        log::line("exited ok");
+    }
     let _ = result;
 }
 
@@ -234,7 +251,14 @@ fn run_saver() -> windows::core::Result<()> {
         }
     }
 
-    let gfx = Gfx::new()?;
+    log::line(&format!("saver: {} monitor(s), scale={scale}", rects.len()));
+    let gfx = match Gfx::new() {
+        Ok(g) => g,
+        Err(e) => {
+            log::line(&format!("Gfx::new failed: {e:?}"));
+            return Err(e);
+        }
+    };
     let mut surfaces: Vec<Surface> = Vec::new();
 
     let mut first_hwnd: Option<HWND> = None;
@@ -276,7 +300,9 @@ fn run_saver() -> windows::core::Result<()> {
     }
 
     // Bail before touching the cursor so a failed init can't leave it hidden.
+    log::line(&format!("saver: {} surface(s) created", surfaces.len()));
     if surfaces.is_empty() {
+        log::line("saver: no surfaces — exiting (nothing to render)");
         return Ok(());
     }
 
@@ -342,7 +368,13 @@ fn run_preview(parent: HWND) -> windows::core::Result<()> {
     }
     let (w, h) = ((rc.right - rc.left).max(1), (rc.bottom - rc.top).max(1));
 
-    let gfx = Gfx::new()?;
+    let gfx = match Gfx::new() {
+        Ok(g) => g,
+        Err(e) => {
+            log::line(&format!("preview Gfx::new failed: {e:?}"));
+            return Err(e);
+        }
+    };
     let child;
     unsafe {
         let hinstance = GetModuleHandleW(None).unwrap_or_default();
