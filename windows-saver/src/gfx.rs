@@ -11,8 +11,9 @@ use windows::core::{s, Error, Result, PCSTR};
 use windows::Win32::Foundation::{BOOL, HWND, TRUE};
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::{
-    D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0,
-    D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, ID3DBlob,
+    D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_10_0,
+    D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+    ID3DBlob,
 };
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{
@@ -56,6 +57,7 @@ pub struct Gfx {
     vs: ID3D11VertexShader,
     ps: ID3D11PixelShader,
     cbuffer: ID3D11Buffer,
+    raster: ID3D11RasterizerState,
 }
 
 /// A single window's render target: a swap chain plus its RTV. `bb_*` is the
@@ -109,9 +111,18 @@ impl Gfx {
         unsafe {
             let mut device: Option<ID3D11Device> = None;
             let mut context: Option<ID3D11DeviceContext> = None;
-            let levels = [D3D_FEATURE_LEVEL_11_0];
-            // Prefer the real GPU; fall back to WARP (software) so the saver
-            // still runs in VMs, RDP sessions, and GPU-less servers.
+            // Request a ladder of feature levels so a genuine FL10 GPU still
+            // gets a HARDWARE device instead of silently dropping to the WARP
+            // software rasterizer — WARP frequently cannot present to the
+            // locked screensaver desktop or the Settings preview pane, which is
+            // the classic "black screensaver" trap. WARP stays as a true last
+            // resort for GPU-less VMs / RDP sessions.
+            let levels = [
+                D3D_FEATURE_LEVEL_11_0,
+                D3D_FEATURE_LEVEL_10_1,
+                D3D_FEATURE_LEVEL_10_0,
+            ];
+            let mut achieved = D3D_FEATURE_LEVEL_11_0;
             let hw = D3D11CreateDevice(
                 None,
                 D3D_DRIVER_TYPE_HARDWARE,
@@ -120,11 +131,13 @@ impl Gfx {
                 Some(&levels),
                 D3D11_SDK_VERSION,
                 Some(&mut device),
-                None,
+                Some(&mut achieved),
                 Some(&mut context),
             );
-            if hw.is_err() {
-                crate::log::line("hardware device failed; falling back to WARP");
+            let driver = if hw.is_err() {
+                crate::log::line(&format!(
+                    "hardware device failed ({hw:?}); falling back to WARP"
+                ));
                 D3D11CreateDevice(
                     None,
                     D3D_DRIVER_TYPE_WARP,
@@ -133,16 +146,34 @@ impl Gfx {
                     Some(&levels),
                     D3D11_SDK_VERSION,
                     Some(&mut device),
-                    None,
+                    Some(&mut achieved),
                     Some(&mut context),
                 )?;
-            }
+                "warp"
+            } else {
+                "hardware"
+            };
             let device = device.ok_or_else(Error::from_win32)?;
             let context = context.ok_or_else(Error::from_win32)?;
             let factory: IDXGIFactory = CreateDXGIFactory1()?;
 
-            let vs_blob = compile(s!("VSMain"), s!("vs_5_0"))?;
-            let ps_blob = compile(s!("PSMain"), s!("ps_5_0"))?;
+            // Pick the shader model the achieved feature level can actually run:
+            // SM5 (`*_5_0`) needs FL11+; on a FL10 device the SM5 blob would
+            // fail at CreateVertexShader, so fall back to SM4 (`*_4_0`).
+            let fl11 = achieved.0 >= D3D_FEATURE_LEVEL_11_0.0;
+            let (vs_target, ps_target) = if fl11 {
+                (s!("vs_5_0"), s!("ps_5_0"))
+            } else {
+                (s!("vs_4_0"), s!("ps_4_0"))
+            };
+            crate::log::line(&format!(
+                "device={driver} feature_level=0x{:x} shader_model={}",
+                achieved.0,
+                if fl11 { "5_0" } else { "4_0" }
+            ));
+
+            let vs_blob = compile(s!("VSMain"), vs_target)?;
+            let ps_blob = compile(s!("PSMain"), ps_target)?;
             let vs_bytes = std::slice::from_raw_parts(
                 vs_blob.GetBufferPointer() as *const u8,
                 vs_blob.GetBufferSize(),
@@ -155,6 +186,20 @@ impl Gfx {
             device.CreateVertexShader(vs_bytes, None, Some(&mut vs))?;
             let mut ps: Option<ID3D11PixelShader> = None;
             device.CreatePixelShader(ps_bytes, None, Some(&mut ps))?;
+            crate::log::line("shaders compiled and created ok");
+
+            // Pin an explicit rasterizer state with culling OFF. The fullscreen
+            // triangle uses the canonical winding that survives default
+            // back-face culling, but relying on the driver default is fragile —
+            // CULL_NONE removes triangle winding as a black-screen variable.
+            let raster_desc = D3D11_RASTERIZER_DESC {
+                FillMode: D3D11_FILL_SOLID,
+                CullMode: D3D11_CULL_NONE,
+                DepthClipEnable: TRUE,
+                ..Default::default()
+            };
+            let mut raster: Option<ID3D11RasterizerState> = None;
+            device.CreateRasterizerState(&raster_desc, Some(&mut raster))?;
 
             let cb_desc = D3D11_BUFFER_DESC {
                 ByteWidth: std::mem::size_of::<Uniforms>() as u32,
@@ -173,6 +218,7 @@ impl Gfx {
                 vs: vs.ok_or_else(Error::from_win32)?,
                 ps: ps.ok_or_else(Error::from_win32)?,
                 cbuffer: cbuffer.ok_or_else(Error::from_win32)?,
+                raster: raster.ok_or_else(Error::from_win32)?,
             })
         }
     }
@@ -248,6 +294,7 @@ impl Gfx {
                 MaxDepth: 1.0,
             };
             self.context.RSSetViewports(Some(&[vp]));
+            self.context.RSSetState(&self.raster);
             let clear = [0.0f32, 0.0, 0.0, 1.0];
             self.context.ClearRenderTargetView(&surf.rtv, &clear);
             self.context.VSSetShader(&self.vs, None);
