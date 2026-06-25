@@ -193,25 +193,37 @@ float3 sceneDeepSpace(float2 uv0, float aspect) {
 }
 
 // ---- Scene 3: Particle Drift -----------------------------------------------
+// Luminous points streaming through a curl-noise flow field, matching the
+// gallery app's FlowingParticles look: soft additive core+halo sprites tinted
+// base->accent by flow speed, over a near-black field, with a slow drift spin.
 float3 sceneParticles(float2 uv0, float aspect) {
-    float2 uv = float2((uv0.x - 0.5) * aspect, uv0.y - 0.5) * 2.2;
+    float2 p = float2((uv0.x - 0.5) * aspect, uv0.y - 0.5) * 2.2;
     float t = uTime * uSpeed;
-    float3 col = uColorA.rgb * 0.04;
-    float thr = lerp(0.94, 0.78, clamp(uDensity, 0.0, 1.0));
-    for (int L = 0; L < 3; L++) {
-        float scale = 6.0 + float(L) * 5.0;
-        float2 flow = float2(fbm2(uv * 0.6 + t * 0.3 + float(L)),
-                             fbm2(uv * 0.6 + float2(11.0, 7.0) - t * 0.25));
-        float2 g = uv * scale + flow * 1.5;
+    // Slow rotation, mirroring the app's points.rotation.y = time * 0.03.
+    float ca = cos(t * 0.03), sa = sin(t * 0.03);
+    p = float2(p.x * ca - p.y * sa, p.x * sa + p.y * ca);
+    float3 col = uColorA.rgb * 0.05;
+    float thr = lerp(0.92, 0.55, clamp(uDensity, 0.0, 1.0));
+    for (int L = 0; L < 4; L++) {
+        float fl = float(L);
+        float scale = 5.0 + fl * 4.0;
+        float2 fp = p * 0.7 + fl * 3.1;
+        float2 flow = float2(fbm2(fp + float2(0.0, t * 0.15)),
+                             fbm2(fp + float2(5.2, 1.3) - t * 0.12));
+        float flowLen = length(flow);
+        float2 g = p * scale + flow * 1.8;
         float2 cell = floor(g);
         float2 f = frac(g) - 0.5;
-        float h = hash21(cell + float(L) * 17.0);
+        float h = hash21(cell + fl * 17.0);
         float present = step(thr, h);
-        float2 pp = (float2(hash21(cell + 2.3), hash21(cell + 8.1)) - 0.5) * 0.6;
+        float2 pp = (float2(hash21(cell + 2.3), hash21(cell + 8.1)) - 0.5) * 0.7;
         float d = length(f - pp);
-        float spark = present * smoothstep(0.10, 0.0, d);
-        float3 tint = lerp(uColorB.rgb, uColorC.rgb, h);
-        col += tint * spark * (1.2 * uIntensity);
+        // Bright core + soft halo → luminous additive bloom (matches app FRAG).
+        float core = smoothstep(0.16, 0.0, d);
+        float halo = smoothstep(0.42, 0.0, d) * 0.35;
+        float glow = present * (1.6 * core + 0.5 * halo) * (0.5 + 0.5 * h);
+        float3 tint = lerp(uColorB.rgb, uColorC.rgb, clamp(flowLen * 0.9, 0.0, 1.0));
+        col += tint * glow * (1.3 * uIntensity) * (1.0 - fl * 0.12);
     }
     return col;
 }
