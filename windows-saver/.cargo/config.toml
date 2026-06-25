@@ -1,0 +1,9 @@
+# Statically link the MSVC C runtime so the .scr has NO dependency on
+# VCRUNTIME140.dll / the VC++ Redistributable. Without this, the screensaver
+# loads its filename into Windows' Screen Saver list but fails to execute on a
+# clean Windows install (no preview, never launches) because that DLL is absent.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

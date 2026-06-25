@@ -19,7 +19,9 @@ Grab the latest build from the [**Releases**](../../releases/latest) page.
 | **macOS screensaver** | `Noctura.saver.zip` | Installs into System Settings → Screen Saver |
 | **Windows** (x64 + ARM64) | `Noctura-Windows.zip` | Installer auto-detects your CPU; includes both builds |
 
-> Builds are unsigned. macOS: right-click → Open the first time. Windows: SmartScreen → More info → Run anyway.
+> Builds are unsigned (no paid Developer ID), so the OS warns on first launch — you can still install:
+> - **macOS:** double-click → Cancel, then **System Settings → Privacy & Security → Open Anyway**. Guaranteed alternative: `xattr -dr com.apple.quarantine /Applications/Noctura.app`. (The DMG includes an "OPEN ME FIRST" guide.)
+> - **Windows:** SmartScreen → **More info → Run anyway**.
 
 ---
 
