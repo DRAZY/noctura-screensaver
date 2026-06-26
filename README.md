@@ -49,7 +49,7 @@ All three builds can overlay the **time** (or **time + date**) on top of the sce
 
 <p><img src="screenshots/16-clock-fonts.png" width="48%" alt="Clock overlay"></p>
 
-**Lock on resume:** require sign-in when the screensaver ends — on Windows a one-click toggle in the saver's settings; on macOS the Options sheet opens the system Lock Screen setting.
+**Lock on resume:** require sign-in when the screensaver ends. On **Windows** this is a one-click toggle in the saver's settings. On **macOS** it's an OS-owned setting a screensaver can't change itself — enable **System Settings → Lock Screen → "Require password after screen saver begins" → Immediately** and macOS locks automatically the moment the screensaver starts; the saver's Options sheet points you there.
 
 ---
 
