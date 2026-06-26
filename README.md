@@ -1,6 +1,6 @@
 # Noctura
 
-**A cross-platform animated screensaver — 13 GPU-rendered scenes, 13 color palettes — for macOS and Windows.**
+**A cross-platform animated screensaver — 16 GPU-rendered scenes, 13 color palettes — for macOS and Windows.**
 
 Noctura runs the *same* scenes everywhere, three ways: a desktop gallery app, a native macOS `.saver`, and a native Windows `.scr`. Every scene is a real-time GPU fragment shader (WebGL on the web build, Metal on macOS, Direct3D 11 on Windows), kept at pixel-level parity across all three.
 
@@ -27,9 +27,12 @@ Grab the latest build from the [**Releases**](../../releases/latest) page.
 
 ## ✨ Scenes
 
-Aurora Drift · Northern Lights · Deep Space · Particle Drift · Plasma Field · Matrix Rain · Fireflies · Black Hole · Hyperspace Tunnel · Synthwave · Kaleidoscope · Caustics · Polar Clock
+Aurora Drift · Northern Lights · Deep Space · Particle Drift · Plasma Field · Matrix Rain · Fireflies · Black Hole · Hyperspace Tunnel · Synthwave · Kaleidoscope · Caustics · Polar Clock · **Liquid Chrome** · **Nebula Drift** · **Fractal Bloom**
 
 <p>
+<img src="screenshots/native-13-LiquidChrome.png" width="32%" alt="Liquid Chrome">
+<img src="screenshots/native-14-NebulaDrift.png" width="32%" alt="Nebula Drift">
+<img src="screenshots/native-15-FractalBloom.png" width="32%" alt="Fractal Bloom">
 <img src="screenshots/native-7-BlackHole.png" width="32%" alt="Black Hole">
 <img src="screenshots/native-5-MatrixRain.png" width="32%" alt="Matrix Rain">
 <img src="screenshots/native-8-HyperspaceTunnel.png" width="32%" alt="Hyperspace Tunnel">
@@ -39,6 +42,14 @@ Aurora Drift · Northern Lights · Deep Space · Particle Drift · Plasma Field 
 </p>
 
 Each scene is tunable: **Style** (13 palettes), **Speed**, **Intensity**, **Density**, **Size**, and a **Performance** mode (Auto / Full / Balanced / Power Saver) that scales render resolution to stay smooth on any GPU.
+
+### 🕒 Clock & lock
+
+All three builds can overlay the **time** (or **time + date**) on top of the scene — choose a typeface (**Light · Modern · Bold · Mono**, mapped to each OS's best modern system font), a position (**Center · Top · Bottom · Corner**), and **12- or 24-hour** format.
+
+<p><img src="screenshots/16-clock-fonts.png" width="48%" alt="Clock overlay"></p>
+
+**Lock on resume:** require sign-in when the screensaver ends — on Windows a one-click toggle in the saver's settings; on macOS the Options sheet opens the system Lock Screen setting.
 
 ---
 
