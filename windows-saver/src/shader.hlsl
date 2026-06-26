@@ -478,7 +478,11 @@ float3 sceneKaleidoscope(float2 uv0, float aspect) {
     float r = length(p);
     float a = atan2(p.y, p.x);
     float seg = TAU / 8.0;
-    a = abs(fmod(a, seg) - seg * 0.5);
+    // GLSL `mod` is always non-negative; HLSL `fmod` keeps the sign of `a`.
+    // atan2 returns a in [-PI,PI], so fmod would fold the lower half-plane
+    // differently from the WebGL app — the source of the "torn lines" seam.
+    // Reproduce GLSL mod exactly: a - seg*floor(a/seg).
+    a = abs((a - seg * floor(a / seg)) - seg * 0.5);
     float zoom = 2.0 + 0.35 * sin(t * 0.2);
     float2 q = float2(cos(a), sin(a)) * r * zoom;
     float detail = smoothstep(0.03, 0.28, r);
