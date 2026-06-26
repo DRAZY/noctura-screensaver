@@ -13,8 +13,9 @@ use windows::Win32::UI::Controls::{InitCommonControlsEx, ICC_BAR_CLASSES, INITCO
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::settings::{
-    Settings, CLOCK_FONTS, CLOCK_MODES, CLOCK_POSITIONS, DENSITY_RANGE, INTENSITY_RANGE, PALETTES,
-    PERFORMANCE, SCENES, SIZE_RANGE, SPEED_RANGE,
+    screensaver_secure, set_screensaver_secure, Settings, CLOCK_FONTS, CLOCK_MODES,
+    CLOCK_POSITIONS, DENSITY_RANGE, INTENSITY_RANGE, PALETTES, PERFORMANCE, SCENES, SIZE_RANGE,
+    SPEED_RANGE,
 };
 
 // Win32 message numbers (stable; used as literals to avoid import-path churn).
@@ -35,6 +36,7 @@ const ID_CLOCK: usize = 1004;
 const ID_CFONT: usize = 1005;
 const ID_CPOS: usize = 1006;
 const ID_C24: usize = 1007;
+const ID_SECURE: usize = 1008;
 const ID_SPEED: usize = 1010;
 const ID_INTENSITY: usize = 1011;
 const ID_DENSITY: usize = 1012;
@@ -56,6 +58,7 @@ struct ConfigState {
     cfont: HWND,
     cpos: HWND,
     c24: HWND,
+    secure: HWND,
 }
 
 fn to_wide(s: &str) -> Vec<u16> {
@@ -184,6 +187,7 @@ unsafe fn make_checkbox(
     text: &str,
     x: i32,
     y: i32,
+    w_px: i32,
     checked: bool,
 ) -> HWND {
     let t = to_wide(text);
@@ -194,7 +198,7 @@ unsafe fn make_checkbox(
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX),
         x,
         y,
-        200,
+        w_px,
         24,
         parent,
         HMENU(id as *mut c_void),
@@ -227,6 +231,8 @@ unsafe extern "system" fn config_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     s.clock_pos = send(st.cpos, CB_GETCURSEL, 0, 0).max(0) as usize;
                     s.clock_24h = send(st.c24, BM_GETCHECK, 0, 0) == 1;
                     s.save();
+                    // System lock-on-resume flag (separate registry hive).
+                    set_screensaver_secure(send(st.secure, BM_GETCHECK, 0, 0) == 1);
                 }
                 let _ = DestroyWindow(hwnd);
                 LRESULT(0)
@@ -288,7 +294,7 @@ pub fn show_config(owner: Option<isize>) {
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             380,
-            508,
+            560,
             owner_hwnd,
             HMENU::default(),
             hinst,
@@ -324,13 +330,20 @@ pub fn show_config(owner: Option<isize>) {
         let cfont = make_combo(hwnd, hinst, ID_CFONT, 150, 324, &CLOCK_FONTS, s.clock_font);
         make_label(hwnd, hinst, "Position", 20, 366);
         let cpos = make_combo(hwnd, hinst, ID_CPOS, 150, 362, &CLOCK_POSITIONS, s.clock_pos);
-        let c24 = make_checkbox(hwnd, hinst, ID_C24, "24-hour clock", 150, 402, s.clock_24h);
+        let c24 = make_checkbox(hwnd, hinst, ID_C24, "24-hour clock", 150, 402, 200, s.clock_24h);
 
-        make_button(hwnd, hinst, ID_SAVE, "Save", 150, 446);
-        make_button(hwnd, hinst, ID_CANCEL, "Cancel", 254, 446);
+        // Security — Windows enforces the lock when this flag is set; we just
+        // mirror the system "On resume, display logon screen" toggle here.
+        let secure = make_checkbox(
+            hwnd, hinst, ID_SECURE, "Lock on resume (require sign-in)", 20, 440, 320,
+            screensaver_secure(),
+        );
+
+        make_button(hwnd, hinst, ID_SAVE, "Save", 150, 484);
+        make_button(hwnd, hinst, ID_CANCEL, "Cancel", 254, 484);
 
         let state = Box::new(ConfigState {
-            scene, palette, perf, speed, intensity, density, size, clock, cfont, cpos, c24,
+            scene, palette, perf, speed, intensity, density, size, clock, cfont, cpos, c24, secure,
         });
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 

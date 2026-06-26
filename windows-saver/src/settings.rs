@@ -136,6 +136,68 @@ impl Settings {
     }
 }
 
+/// Read the system "On resume, display logon screen" flag
+/// (`HKCU\Control Panel\Desktop\ScreenSaverIsSecure`). Windows — not the `.scr`
+/// — enforces the lock when this is "1"; Noctura's dialog only mirrors the
+/// toggle so it can be set without leaving the screensaver settings.
+pub fn screensaver_secure() -> bool {
+    read_desktop("ScreenSaverIsSecure").map(|v| v.trim() == "1").unwrap_or(false)
+}
+
+/// Write the system lock-on-resume flag. Takes effect for the secure-screensaver
+/// path Windows itself drives; the `.scr` never reads it.
+pub fn set_screensaver_secure(on: bool) {
+    write_desktop("ScreenSaverIsSecure", if on { "1" } else { "0" });
+}
+
+fn read_desktop(name: &str) -> Option<String> {
+    let name_w = to_wide(name);
+    let mut buf = [0u16; 64];
+    let mut size: u32 = (buf.len() * 2) as u32;
+    unsafe {
+        let r = RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!("Control Panel\\Desktop"),
+            PCWSTR(name_w.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut size),
+        );
+        if r != ERROR_SUCCESS {
+            return None;
+        }
+    }
+    let count = (size as usize / 2).min(buf.len());
+    let len = if count > 0 && buf[count - 1] == 0 { count - 1 } else { count };
+    Some(String::from_utf16_lossy(&buf[..len]))
+}
+
+fn write_desktop(name: &str, value: &str) {
+    let name_w = to_wide(name);
+    let value_w = to_wide(value);
+    unsafe {
+        let mut hkey = HKEY::default();
+        let r = RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            w!("Control Panel\\Desktop"),
+            0,
+            None,
+            REG_OPTION_NON_VOLATILE,
+            KEY_READ | KEY_WRITE,
+            None,
+            &mut hkey,
+            None,
+        );
+        if r != ERROR_SUCCESS {
+            return;
+        }
+        let bytes = std::slice::from_raw_parts(value_w.as_ptr() as *const u8, value_w.len() * 2);
+        let _ = RegSetValueExW(hkey, PCWSTR(name_w.as_ptr()), 0, REG_SZ, Some(bytes));
+        let _ = RegCloseKey(hkey);
+    }
+}
+
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }

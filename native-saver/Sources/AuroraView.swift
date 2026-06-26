@@ -538,6 +538,15 @@ final class AuroraConfigController: NSObject {
         clock24hCheckbox.frame = NSRect(x: 130, y: y, width: 230, height: 22)
         content.addSubview(clock24hCheckbox)
 
+        // Lock-on-resume facilitation: the sandboxed saver can't set the system
+        // lock itself, so this opens System Settings → Lock Screen, where the
+        // user enables "Require password after screen saver begins".
+        let lock = NSButton(title: "Lock Screen…", target: self, action: #selector(openLockSettings))
+        lock.frame = NSRect(x: 20, y: 20, width: 120, height: 30)
+        lock.bezelStyle = .rounded
+        lock.toolTip = "Open System Settings → Lock Screen to require a password after the screensaver starts"
+        content.addSubview(lock)
+
         // Buttons pinned to the bottom.
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
         cancel.frame = NSRect(x: 150, y: 20, width: 90, height: 30)
@@ -574,6 +583,19 @@ final class AuroraConfigController: NSObject {
 
     @objc private func cancel() {
         dismiss()
+    }
+
+    /// Open the macOS Lock Screen settings pane (best-effort across OS versions),
+    /// where the user can require a password after the screensaver begins. The
+    /// saver cannot set this itself — it's an OS-owned, entitlement-gated setting.
+    @objc private func openLockSettings() {
+        let candidates = [
+            "x-apple.systempreferences:com.apple.Lock-Screen-Settings.extension", // Ventura+
+            "x-apple.systempreferences:com.apple.preference.security?Screen",     // older
+        ]
+        for s in candidates {
+            if let url = URL(string: s), NSWorkspace.shared.open(url) { return }
+        }
     }
 
     private func dismiss() {
