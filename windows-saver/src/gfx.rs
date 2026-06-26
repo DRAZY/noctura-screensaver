@@ -7,8 +7,23 @@
 //! chain whose back buffer can be smaller than the window; Present stretches it
 //! to fill the window, which is how the performance-scale modes cut GPU cost.
 
-use windows::core::{s, Error, Result, PCSTR};
+use windows::core::{s, w, Error, Interface, Result, PCSTR, PCWSTR};
 use windows::Win32::Foundation::{BOOL, HWND, TRUE};
+use windows::Win32::Graphics::Direct2D::Common::{
+    D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
+};
+use windows::Win32::Graphics::Direct2D::{
+    D2D1CreateFactory, ID2D1Factory, ID2D1RenderTarget, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE,
+};
+use windows::Win32::Graphics::DirectWrite::{
+    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
+    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
+    DWRITE_FONT_WEIGHT_BLACK, DWRITE_FONT_WEIGHT_LIGHT, DWRITE_FONT_WEIGHT_MEDIUM,
+    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+    DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_TRAILING,
+};
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_10_0,
@@ -20,7 +35,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_MODE_DESC, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, IDXGIFactory, IDXGISwapChain, DXGI_SWAP_CHAIN_DESC,
+    CreateDXGIFactory1, IDXGIFactory, IDXGISurface, IDXGISwapChain, DXGI_SWAP_CHAIN_DESC,
     DXGI_SWAP_EFFECT_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
 
@@ -49,7 +64,9 @@ const _: () = assert!(std::mem::size_of::<Uniforms>() == 112);
 
 const SHADER_SRC: &str = include_str!("shader.hlsl");
 
-/// Shared Direct3D device, compiled shaders, and constant buffer.
+/// Shared Direct3D device, compiled shaders, and constant buffer. Also owns the
+/// Direct2D + DirectWrite factories used to draw the clock overlay on top of the
+/// rendered scene (sharp vector text, mirroring the macOS / app clock).
 pub struct Gfx {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
@@ -58,6 +75,17 @@ pub struct Gfx {
     ps: ID3D11PixelShader,
     cbuffer: ID3D11Buffer,
     raster: ID3D11RasterizerState,
+    d2d: ID2D1Factory,
+    dwrite: IDWriteFactory,
+}
+
+/// One frame's clock overlay request: the formatted strings plus the chosen
+/// typeface role and position. `date` is `None` for time-only mode.
+pub struct ClockDraw<'a> {
+    pub time: &'a str,
+    pub date: Option<&'a str>,
+    pub font: usize,
+    pub pos: usize,
 }
 
 /// A single window's render target: a swap chain plus its RTV. `bb_*` is the
@@ -66,6 +94,10 @@ pub struct Gfx {
 pub struct Surface {
     swapchain: IDXGISwapChain,
     rtv: ID3D11RenderTargetView,
+    /// Direct2D render target wrapping this swap chain's back buffer, used to
+    /// paint the clock on top of the scene. `None` if D2D interop is unavailable
+    /// (the scene still renders; only the overlay is skipped).
+    d2d_rt: Option<ID2D1RenderTarget>,
     pub bb_w: u32,
     pub bb_h: u32,
 }
@@ -211,6 +243,11 @@ impl Gfx {
             let mut cbuffer: Option<ID3D11Buffer> = None;
             device.CreateBuffer(&cb_desc, None, Some(&mut cbuffer))?;
 
+            // Direct2D + DirectWrite for the clock overlay. Single-threaded factory
+            // (we only ever draw from the message-loop thread).
+            let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
+            let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+
             Ok(Gfx {
                 device,
                 context,
@@ -219,6 +256,8 @@ impl Gfx {
                 ps: ps.ok_or_else(Error::from_win32)?,
                 cbuffer: cbuffer.ok_or_else(Error::from_win32)?,
                 raster: raster.ok_or_else(Error::from_win32)?,
+                d2d,
+                dwrite,
             })
         }
     }
@@ -254,19 +293,40 @@ impl Gfx {
             let mut rtv: Option<ID3D11RenderTargetView> = None;
             self.device
                 .CreateRenderTargetView(&backbuffer, None, Some(&mut rtv))?;
+
+            // A Direct2D render target over the same back buffer (BGRA, D2D-
+            // compatible). DPI pinned to 96 so D2D coordinates == pixels. If this
+            // fails on some driver, the clock is simply skipped, never the scene.
+            let d2d_rt = backbuffer.cast::<IDXGISurface>().ok().and_then(|surf| {
+                let props = D2D1_RENDER_TARGET_PROPERTIES {
+                    r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_IGNORE,
+                    },
+                    dpiX: 96.0,
+                    dpiY: 96.0,
+                    usage: D2D1_RENDER_TARGET_USAGE_NONE,
+                    minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
+                };
+                self.d2d.CreateDxgiSurfaceRenderTarget(&surf, &props).ok()
+            });
+
             Ok(Surface {
                 swapchain,
                 rtv: rtv.ok_or_else(Error::from_win32)?,
+                d2d_rt,
                 bb_w,
                 bb_h,
             })
         }
     }
 
-    /// Render one frame of `u` into `surf` and present it. Returns `false` if
-    /// Present reports device loss (TDR / driver reset / GPU switch) so the
-    /// caller can exit instead of freezing on a stale frame.
-    pub fn render(&self, surf: &Surface, u: &Uniforms, vsync: u32) -> bool {
+    /// Render one frame of `u` into `surf` and present it. When `clock` is
+    /// `Some`, the time/date overlay is painted on top of the scene before
+    /// Present. Returns `false` if Present reports device loss (TDR / driver
+    /// reset / GPU switch) so the caller can exit instead of freezing.
+    pub fn render(&self, surf: &Surface, u: &Uniforms, vsync: u32, clock: Option<&ClockDraw>) -> bool {
         unsafe {
             // Upload uniforms.
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
@@ -305,11 +365,115 @@ impl Gfx {
             self.context
                 .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             self.context.Draw(3, 0);
+
+            // Clock overlay. Unbind the back buffer from D3D and flush so the
+            // scene is committed before Direct2D (a separate device) paints text
+            // onto the same surface, then Present composites the result.
+            if let Some(c) = clock {
+                if let Some(rt) = &surf.d2d_rt {
+                    self.context.OMSetRenderTargets(Some(&[None]), None);
+                    self.context.Flush();
+                    self.draw_clock(rt, surf.bb_w as f32, surf.bb_h as f32, c);
+                }
+            }
+
             let hr = surf
                 .swapchain
                 .Present(vsync, windows::Win32::Graphics::Dxgi::DXGI_PRESENT(0));
             hr.is_ok()
         }
+    }
+
+    /// Build a DirectWrite text format for a clock typeface role.
+    unsafe fn text_format(
+        &self,
+        family: PCWSTR,
+        weight: DWRITE_FONT_WEIGHT,
+        align: DWRITE_TEXT_ALIGNMENT,
+        size: f32,
+    ) -> Option<IDWriteTextFormat> {
+        let f = self
+            .dwrite
+            .CreateTextFormat(
+                family,
+                None,
+                weight,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                size,
+                w!(""),
+            )
+            .ok()?;
+        let _ = f.SetTextAlignment(align);
+        let _ = f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        Some(f)
+    }
+
+    /// Paint the clock onto `rt` (a D2D target over the back buffer). Mirrors the
+    /// macOS/app layout: time line plus an optional date line beneath, sized and
+    /// positioned by `bb` dimensions and the chosen role/position. Each line is
+    /// drawn twice — a soft dark shadow then white — for legibility over any scene.
+    unsafe fn draw_clock(&self, rt: &ID2D1RenderTarget, w: f32, h: f32, c: &ClockDraw) {
+        let (family, weight): (PCWSTR, DWRITE_FONT_WEIGHT) = match c.font {
+            0 => (w!("Segoe UI"), DWRITE_FONT_WEIGHT_LIGHT),      // Light
+            2 => (w!("Segoe UI"), DWRITE_FONT_WEIGHT_BLACK),      // Bold
+            3 => (w!("Consolas"), DWRITE_FONT_WEIGHT_MEDIUM),     // Mono
+            _ => (w!("Segoe UI"), DWRITE_FONT_WEIGHT_SEMI_BOLD),  // Modern
+        };
+        let align = if c.pos == 3 {
+            DWRITE_TEXT_ALIGNMENT_TRAILING
+        } else {
+            DWRITE_TEXT_ALIGNMENT_CENTER
+        };
+        let time_size = (h * 0.12).clamp(28.0, 240.0);
+        let date_size = time_size * 0.20;
+
+        let Some(time_fmt) = self.text_format(family, weight, align, time_size) else { return };
+
+        let white = match rt.CreateSolidColorBrush(
+            &D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 0.95 },
+            None,
+        ) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let shadow = match rt.CreateSolidColorBrush(
+            &D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.55 },
+            None,
+        ) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+
+        let time_h = time_size * 1.3;
+        let date_h = date_size * 1.6;
+        let gap = 6.0_f32;
+        let has_date = c.date.is_some();
+        let block_h = time_h + if has_date { date_h + gap } else { 0.0 };
+        let pad = h * 0.06;
+        let side = if c.pos == 3 { w * 0.06 } else { 0.0 };
+        let top = match c.pos {
+            1 => pad,                       // Top
+            2 | 3 => h - pad - block_h,     // Bottom / Corner
+            _ => (h - block_h) / 2.0,       // Center
+        };
+
+        let draw_line = |s: &str, fmt: &IDWriteTextFormat, y: f32, lh: f32| unsafe {
+            let u: Vec<u16> = s.encode_utf16().collect();
+            let sh = D2D_RECT_F { left: side + 2.0, top: y + 3.0, right: w - side + 2.0, bottom: y + lh + 3.0 };
+            let r = D2D_RECT_F { left: side, top: y, right: w - side, bottom: y + lh };
+            rt.DrawText(&u, fmt, &sh, &shadow, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            rt.DrawText(&u, fmt, &r, &white, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+        };
+
+        rt.BeginDraw();
+        draw_line(c.time, &time_fmt, top, time_h);
+        if let Some(date) = c.date {
+            if let Some(date_fmt) = self.text_format(family, weight, align, date_size) {
+                draw_line(date, &date_fmt, top + time_h + gap, date_h);
+            }
+        }
+        let _ = rt.EndDraw(None, None);
     }
 }
 

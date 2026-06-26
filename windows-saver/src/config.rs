@@ -13,8 +13,8 @@ use windows::Win32::UI::Controls::{InitCommonControlsEx, ICC_BAR_CLASSES, INITCO
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::settings::{
-    Settings, DENSITY_RANGE, INTENSITY_RANGE, PALETTES, PERFORMANCE, SCENES, SIZE_RANGE,
-    SPEED_RANGE,
+    Settings, CLOCK_FONTS, CLOCK_MODES, CLOCK_POSITIONS, DENSITY_RANGE, INTENSITY_RANGE, PALETTES,
+    PERFORMANCE, SCENES, SIZE_RANGE, SPEED_RANGE,
 };
 
 // Win32 message numbers (stable; used as literals to avoid import-path churn).
@@ -24,10 +24,17 @@ const CB_GETCURSEL: u32 = 0x0147;
 const TBM_SETRANGE: u32 = 0x0406;
 const TBM_SETPOS: u32 = 0x0405;
 const TBM_GETPOS: u32 = 0x0400;
+const BM_GETCHECK: u32 = 0x00F0;
+const BM_SETCHECK: u32 = 0x00F1;
+const BS_AUTOCHECKBOX: u32 = 0x0003;
 
 const ID_SCENE: usize = 1001;
 const ID_PALETTE: usize = 1002;
 const ID_PERF: usize = 1003;
+const ID_CLOCK: usize = 1004;
+const ID_CFONT: usize = 1005;
+const ID_CPOS: usize = 1006;
+const ID_C24: usize = 1007;
 const ID_SPEED: usize = 1010;
 const ID_INTENSITY: usize = 1011;
 const ID_DENSITY: usize = 1012;
@@ -45,6 +52,10 @@ struct ConfigState {
     intensity: HWND,
     density: HWND,
     size: HWND,
+    clock: HWND,
+    cfont: HWND,
+    cpos: HWND,
+    c24: HWND,
 }
 
 fn to_wide(s: &str) -> Vec<u16> {
@@ -166,6 +177,35 @@ unsafe fn make_button(
     );
 }
 
+unsafe fn make_checkbox(
+    parent: HWND,
+    hinst: windows::Win32::Foundation::HINSTANCE,
+    id: usize,
+    text: &str,
+    x: i32,
+    y: i32,
+    checked: bool,
+) -> HWND {
+    let t = to_wide(text);
+    let cb = CreateWindowExW(
+        WINDOW_EX_STYLE(0),
+        w!("BUTTON"),
+        PCWSTR(t.as_ptr()),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX),
+        x,
+        y,
+        200,
+        24,
+        parent,
+        HMENU(id as *mut c_void),
+        hinst,
+        None,
+    )
+    .unwrap_or_default();
+    send(cb, BM_SETCHECK, if checked { 1 } else { 0 }, 0);
+    cb
+}
+
 unsafe extern "system" fn config_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_COMMAND => {
@@ -182,6 +222,10 @@ unsafe extern "system" fn config_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     s.intensity = tb_to_f(send(st.intensity, TBM_GETPOS, 0, 0) as i32, INTENSITY_RANGE);
                     s.density = tb_to_f(send(st.density, TBM_GETPOS, 0, 0) as i32, DENSITY_RANGE);
                     s.size = tb_to_f(send(st.size, TBM_GETPOS, 0, 0) as i32, SIZE_RANGE);
+                    s.clock_mode = send(st.clock, CB_GETCURSEL, 0, 0).max(0) as usize;
+                    s.clock_font = send(st.cfont, CB_GETCURSEL, 0, 0).max(0) as usize;
+                    s.clock_pos = send(st.cpos, CB_GETCURSEL, 0, 0).max(0) as usize;
+                    s.clock_24h = send(st.c24, BM_GETCHECK, 0, 0) == 1;
                     s.save();
                 }
                 let _ = DestroyWindow(hwnd);
@@ -244,7 +288,7 @@ pub fn show_config(owner: Option<isize>) {
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             380,
-            390,
+            508,
             owner_hwnd,
             HMENU::default(),
             hinst,
@@ -273,10 +317,21 @@ pub fn show_config(owner: Option<isize>) {
         let perf_items: Vec<&str> = PERFORMANCE.iter().map(|p| p.name).collect();
         let perf = make_combo(hwnd, hinst, ID_PERF, 150, 248, &perf_items, s.performance);
 
-        make_button(hwnd, hinst, ID_SAVE, "Save", 150, 300);
-        make_button(hwnd, hinst, ID_CANCEL, "Cancel", 254, 300);
+        // Clock overlay controls (parity with macOS / the app).
+        make_label(hwnd, hinst, "Clock", 20, 290);
+        let clock = make_combo(hwnd, hinst, ID_CLOCK, 150, 286, &CLOCK_MODES, s.clock_mode);
+        make_label(hwnd, hinst, "Font", 20, 328);
+        let cfont = make_combo(hwnd, hinst, ID_CFONT, 150, 324, &CLOCK_FONTS, s.clock_font);
+        make_label(hwnd, hinst, "Position", 20, 366);
+        let cpos = make_combo(hwnd, hinst, ID_CPOS, 150, 362, &CLOCK_POSITIONS, s.clock_pos);
+        let c24 = make_checkbox(hwnd, hinst, ID_C24, "24-hour clock", 150, 402, s.clock_24h);
 
-        let state = Box::new(ConfigState { scene, palette, perf, speed, intensity, density, size });
+        make_button(hwnd, hinst, ID_SAVE, "Save", 150, 446);
+        make_button(hwnd, hinst, ID_CANCEL, "Cancel", 254, 446);
+
+        let state = Box::new(ConfigState {
+            scene, palette, perf, speed, intensity, density, size, clock, cfont, cpos, c24,
+        });
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
         let _ = ShowWindow(hwnd, SW_SHOW);

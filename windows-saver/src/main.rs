@@ -21,7 +21,7 @@ mod settings;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
-use gfx::{Gfx, Surface, Uniforms};
+use gfx::{ClockDraw, Gfx, Surface, Uniforms};
 use settings::Settings;
 
 use windows::core::{w, PCWSTR};
@@ -121,6 +121,38 @@ fn clock_values() -> ([f32; 4], f32) {
     let day = (st.wHour as f32 * 3600.0 + st.wMinute as f32 * 60.0 + st.wSecond as f32) / 86400.0;
     let month = ((st.wMonth as f32 - 1.0) + (st.wDay as f32 - 1.0) / 31.0) / 12.0;
     ([sec, min, hour, day], month)
+}
+
+/// Format the clock's time line (and optional date line) from the local clock,
+/// honoring the 12/24-hour setting. Returns `(time, Some(date))` when the mode
+/// is Time + Date, else `(time, None)`.
+fn clock_strings(s: &Settings) -> (String, Option<String>) {
+    let st = unsafe { GetLocalTime() };
+    let (h, m) = (st.wHour, st.wMinute);
+    let time = if s.clock_24h {
+        format!("{:02}:{:02}", h, m)
+    } else {
+        let h12 = match h % 12 {
+            0 => 12,
+            x => x,
+        };
+        format!("{}:{:02} {}", h12, m, if h < 12 { "AM" } else { "PM" })
+    };
+    let date = if s.clock_mode == 2 {
+        const WD: [&str; 7] = [
+            "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+        ];
+        const MO: [&str; 12] = [
+            "January", "February", "March", "April", "May", "June", "July", "August",
+            "September", "October", "November", "December",
+        ];
+        let wd = WD[(st.wDayOfWeek as usize) % 7];
+        let mo = MO[(st.wMonth as usize).saturating_sub(1) % 12];
+        Some(format!("{}, {} {}", wd, mo, st.wDay))
+    } else {
+        None
+    };
+    (time, date)
 }
 
 fn build_uniforms(s: &Settings, time: f32, res: [f32; 2]) -> Uniforms {
@@ -333,9 +365,16 @@ fn run_saver() -> windows::core::Result<()> {
             break;
         }
         let t = start.elapsed().as_secs_f32();
+        let (ctime, cdate) = clock_strings(&settings);
+        let clock = (settings.clock_mode != 0).then(|| ClockDraw {
+            time: &ctime,
+            date: cdate.as_deref(),
+            font: settings.clock_font,
+            pos: settings.clock_pos,
+        });
         for surf in &surfaces {
             let u = build_uniforms(&settings, t, [surf.bb_w as f32, surf.bb_h as f32]);
-            if !gfx.render(surf, &u, 1) {
+            if !gfx.render(surf, &u, 1, clock.as_ref()) {
                 // Device lost (TDR / driver reset). Don't sit on a frozen
                 // frame — end the saver so the desktop returns.
                 QUIT.store(true, Ordering::Relaxed);
@@ -415,7 +454,14 @@ fn run_preview(parent: HWND) -> windows::core::Result<()> {
         }
         let t = start.elapsed().as_secs_f32();
         let u = build_uniforms(&settings, t, [surf.bb_w as f32, surf.bb_h as f32]);
-        gfx.render(&surf, &u, 1);
+        let (ctime, cdate) = clock_strings(&settings);
+        let clock = (settings.clock_mode != 0).then(|| ClockDraw {
+            time: &ctime,
+            date: cdate.as_deref(),
+            font: settings.clock_font,
+            pos: settings.clock_pos,
+        });
+        gfx.render(&surf, &u, 1, clock.as_ref());
         std::thread::sleep(Duration::from_millis(16));
     }
     Ok(())

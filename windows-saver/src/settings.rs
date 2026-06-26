@@ -58,6 +58,11 @@ pub const PERFORMANCE: [Performance; 4] = [
     Performance { name: "Power Saver (30 fps)", max_scale: 1.0 / 2.0,  frame_secs: 1.0 / 30.0, is_auto: false },
 ];
 
+/// Clock overlay options (parity with the macOS saver and the WebGL app).
+pub const CLOCK_MODES: [&str; 3] = ["Off", "Time", "Time + Date"];
+pub const CLOCK_FONTS: [&str; 4] = ["Light", "Modern", "Bold", "Mono"];
+pub const CLOCK_POSITIONS: [&str; 4] = ["Center", "Top", "Bottom", "Corner"];
+
 /// Control ranges, matching the macOS sliders.
 pub const SPEED_RANGE: (f32, f32) = (0.03, 1.2);
 pub const INTENSITY_RANGE: (f32, f32) = (0.0, 1.5);
@@ -73,6 +78,10 @@ pub struct Settings {
     pub density: f32,
     pub size: f32,
     pub performance: usize,
+    pub clock_mode: usize,
+    pub clock_font: usize,
+    pub clock_pos: usize,
+    pub clock_24h: bool,
 }
 
 impl Default for Settings {
@@ -80,6 +89,7 @@ impl Default for Settings {
         Settings {
             scene: 0, palette: 0, speed: 0.3, intensity: 1.0,
             density: 0.5, size: 0.85, performance: 0,
+            clock_mode: 0, clock_font: 1, clock_pos: 2, clock_24h: false,
         }
     }
 }
@@ -103,6 +113,10 @@ impl Settings {
         if let Some(v) = read_str("intensity") { if let Ok(f) = v.parse::<f32>() { s.intensity = clampf(f, INTENSITY_RANGE); } }
         if let Some(v) = read_str("density") { if let Ok(f) = v.parse::<f32>() { s.density = clampf(f, DENSITY_RANGE); } }
         if let Some(v) = read_str("size") { if let Ok(f) = v.parse::<f32>() { s.size = clampf(f, SIZE_RANGE); } }
+        if let Some(v) = read_str("clockMode") { if let Ok(n) = v.parse::<i64>() { s.clock_mode = clampi(n, 0, 2) as usize; } }
+        if let Some(v) = read_str("clockFont") { if let Ok(n) = v.parse::<i64>() { s.clock_font = clampi(n, 0, 3) as usize; } }
+        if let Some(v) = read_str("clockPosition") { if let Ok(n) = v.parse::<i64>() { s.clock_pos = clampi(n, 0, 3) as usize; } }
+        if let Some(v) = read_str("clock24h") { s.clock_24h = v == "1"; }
         s
     }
 
@@ -115,6 +129,10 @@ impl Settings {
         write_str("intensity", &format!("{}", self.intensity));
         write_str("density", &format!("{}", self.density));
         write_str("size", &format!("{}", self.size));
+        write_str("clockMode", &self.clock_mode.to_string());
+        write_str("clockFont", &self.clock_font.to_string());
+        write_str("clockPosition", &self.clock_pos.to_string());
+        write_str("clock24h", if self.clock_24h { "1" } else { "0" });
     }
 }
 
