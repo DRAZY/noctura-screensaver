@@ -5,8 +5,11 @@ import { BlackHole } from "./BlackHole";
 import { Caustics } from "./Caustics";
 import { Fireflies } from "./Fireflies";
 import { FlowingParticles } from "./FlowingParticles";
+import { FractalBloom } from "./FractalBloom";
 import { Kaleidoscope } from "./Kaleidoscope";
+import { LiquidChrome } from "./LiquidChrome";
 import { MatrixRain } from "./MatrixRain";
+import { Nebula } from "./Nebula";
 import { Plasma } from "./Plasma";
 import { PolarClock } from "./PolarClock";
 import { Starfield } from "./Starfield";
@@ -32,4 +35,9 @@ export function registerAllScenes(manager: SceneManager): void {
   manager.register(new Kaleidoscope());
   manager.register(new Caustics());
   manager.register(new PolarClock());
+  // Newer scenes — appended so existing saved scene indices stay stable and the
+  // native .saver / .scr dispatch order (13/14/15) matches one-to-one.
+  manager.register(new LiquidChrome());
+  manager.register(new Nebula());
+  manager.register(new FractalBloom());
 }

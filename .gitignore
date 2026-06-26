@@ -33,3 +33,6 @@ native-saver/build/
 *.njsproj
 *.sln
 *.sw?
+
+# glslang validation artifacts
+*.spv

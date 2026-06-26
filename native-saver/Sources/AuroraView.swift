@@ -1,6 +1,5 @@
 import AppKit
 import Metal
-import ObjectiveC
 import QuartzCore
 import ScreenSaver
 
@@ -13,10 +12,11 @@ import ScreenSaver
 /// `AuroraPreferences`, editable through the Options sheet.
 @objc(AuroraView)
 final class AuroraView: ScreenSaverView {
-    private let preferences = AuroraPreferences()
+    // Internal (not private) so the shared config controller can read/write the
+    // same persisted settings the live view uses, keeping a single source of truth.
+    let preferences = AuroraPreferences()
     private let renderer: AuroraRenderer?
     private let metalLayer = CAMetalLayer()
-    private var configController: AuroraConfigController?
     // Wall-clock timestamp of the previous frame, so animation advances by real
     // elapsed time rather than a fixed 1/60 — any timer jitter from the
     // screensaver framework then no longer shows up as visible stutter.
@@ -267,25 +267,29 @@ final class AuroraView: ScreenSaverView {
     override var hasConfigureSheet: Bool { true }
 
     override var configureSheet: NSWindow? {
-        // Reuse a single controller/window for the lifetime of this view. Building
-        // a fresh NSWindow on every access orphaned the previous one: if its
-        // parent↔sheet attachment hadn't fully torn down, the System Settings host
-        // would silently refuse to begin a new sheet on its window — the Options
-        // panel "wouldn't appear" until Settings was relaunched. One reused window,
-        // re-seeded from preferences each time, avoids that stale-attachment trap.
-        let controller = configController ?? AuroraConfigController(preferences: preferences) { [weak self] in
-            // On dismiss, re-read settings so a still-running preview updates —
-            // including the performance profile, which changes both frame cadence
-            // and render resolution.
-            guard let self else { return }
-            self.renderer?.apply(preferences: self.preferences)
-            self.resetAdaptiveState() // a mode switch reseeds Auto's convergence
-            self.animationTimeInterval = self.effectiveFrameInterval()
-            self.updateLayerGeometry()
-        }
-        configController = controller
-        controller.refreshFromPreferences()
+        // Return ONE process-wide config window, not a per-view one. System
+        // Settings recreates the preview AuroraView constantly (reselection,
+        // display change, preview refresh) and may query `configureSheet` on a
+        // stale, half-torn-down instance — its window then can't begin a sheet
+        // and the Options panel silently "won't appear" until Settings is
+        // relaunched. A single shared window, scrubbed to a pristine state before
+        // every present, removes every known path into that trap (and deletes the
+        // old per-view leak/associated-object hack along with it).
+        let controller = AuroraConfigController.shared
+        controller.attach(to: self)
+        controller.prepareForPresentation()
         return controller.window
+    }
+
+    /// Re-read settings after the Options sheet closes so a still-running preview
+    /// updates live — including the performance profile, which changes both frame
+    /// cadence and render resolution. Called by the shared config controller on
+    /// the view that vended the sheet.
+    func reloadFromPreferences() {
+        renderer?.apply(preferences: preferences)
+        resetAdaptiveState() // a mode switch reseeds Auto's convergence
+        animationTimeInterval = effectiveFrameInterval()
+        updateLayerGeometry()
     }
 }
 
@@ -294,9 +298,18 @@ final class AuroraView: ScreenSaverView {
 /// same knobs popular screensavers offer, and persists them through
 /// `AuroraPreferences`.
 final class AuroraConfigController: NSObject {
+    /// One config window for the whole process. Lives as long as the saver
+    /// bundle is loaded; the System Settings host retains it only for the
+    /// duration of each sheet present. Because it is a static singleton its
+    /// button targets can never dangle (the old per-view design needed an
+    /// associated-object retain to avoid exactly that).
+    static let shared = AuroraConfigController()
+
     let window: NSWindow
-    private let preferences: AuroraPreferences
-    private let onClose: () -> Void
+    /// The view that most recently vended the sheet; settings are read/written
+    /// through it so preview and saver stay in sync. Weak so a recreated view
+    /// can deallocate normally.
+    private weak var currentView: AuroraView?
 
     private let scenePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let palettePopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -306,9 +319,7 @@ final class AuroraConfigController: NSObject {
     private let sizeSlider = NSSlider()
     private let performancePopup = NSPopUpButton(frame: .zero, pullsDown: false)
 
-    init(preferences: AuroraPreferences, onClose: @escaping () -> Void) {
-        self.preferences = preferences
-        self.onClose = onClose
+    private override init() {
         self.window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 380, height: 416),
             styleMask: [.titled],
@@ -316,25 +327,40 @@ final class AuroraConfigController: NSObject {
             defer: false
         )
         super.init()
-        // CRITICAL: NSWindow defaults isReleasedWhenClosed = true, which fires an
-        // extra release on close. ARC already owns this window via the strong
-        // `window` property, so that extra release over-releases it and crashes the
-        // System Settings / legacyScreenSaver host process — the real cause of
-        // "Options won't open until I restart Settings." Disable it.
+        // NSWindow defaults isReleasedWhenClosed = true, firing an extra release
+        // on close. ARC already owns this window via the strong static `shared`
+        // reference, so that extra release over-releases it and crashes the host.
+        // Disable it so close() is a clean state-reset we can call freely.
         window.isReleasedWhenClosed = false
-        // Keep this controller alive as long as the window is (the host retains the
-        // window while presenting). The buttons' target is a weak reference, so
-        // without this the controller could die with a recreated AuroraView and
-        // leave the sheet un-dismissable.
-        objc_setAssociatedObject(window, &Self.controllerKey, self, .OBJC_ASSOCIATION_RETAIN)
         buildUI()
     }
 
-    private static var controllerKey: UInt8 = 0
+    /// Bind the controller to the live view that requested the sheet and seed the
+    /// controls from its persisted settings.
+    func attach(to view: AuroraView) {
+        currentView = view
+        refreshFromPreferences()
+    }
+
+    /// Force the reused window into a clean, unattached, hidden state so the host
+    /// can always begin a fresh sheet on it. The intermittent "Options won't
+    /// open" failure is the host refusing to begin a sheet on a window that still
+    /// carries residual sheet/visibility/parent state from a previous present.
+    /// Scrubbing every such bit before handing the window back closes that gap.
+    func prepareForPresentation() {
+        if let parent = window.sheetParent { parent.endSheet(window) }
+        window.parent?.removeChildWindow(window)
+        if window.isVisible { window.orderOut(nil) }
+        if window.styleMask != [.titled] { window.styleMask = [.titled] }
+        refreshFromPreferences()
+    }
+
+    private var preferences: AuroraPreferences? { currentView?.preferences }
 
     /// Re-seed every control from the persisted preferences. Called each time the
     /// sheet is vended so the reused window never shows stale values.
     func refreshFromPreferences() {
+        guard let preferences else { return }
         scenePopup.selectItem(at: preferences.sceneIndex)
         palettePopup.selectItem(at: preferences.paletteIndex)
         speedSlider.doubleValue = Double(preferences.speed)
@@ -362,42 +388,43 @@ final class AuroraConfigController: NSObject {
             s.doubleValue = Double(value)
         }
 
+        // Controls are seeded with neutral defaults here; refreshFromPreferences()
+        // sets their real values from the live view's settings before every
+        // present (the singleton is built before any view has attached).
+
         // Scene.
         content.addSubview(label("Scene", 364))
         scenePopup.frame = NSRect(x: 130, y: 360, width: 230, height: 26)
         scenePopup.addItems(withTitles: AuroraScene.all.map { $0.name })
-        scenePopup.selectItem(at: preferences.sceneIndex)
         content.addSubview(scenePopup)
 
         // Style / palette.
         content.addSubview(label("Style", 320))
         palettePopup.frame = NSRect(x: 130, y: 316, width: 230, height: 26)
         palettePopup.addItems(withTitles: AuroraPalette.all.map { $0.name })
-        palettePopup.selectItem(at: preferences.paletteIndex)
         content.addSubview(palettePopup)
 
         content.addSubview(label("Speed", 272))
-        slider(speedSlider, 268, AuroraPreferences.speedRange, preferences.speed)
+        slider(speedSlider, 268, AuroraPreferences.speedRange, AuroraPreferences.speedRange.lowerBound)
         content.addSubview(speedSlider)
 
         content.addSubview(label("Intensity", 228))
-        slider(intensitySlider, 224, AuroraPreferences.intensityRange, preferences.intensity)
+        slider(intensitySlider, 224, AuroraPreferences.intensityRange, AuroraPreferences.intensityRange.lowerBound)
         content.addSubview(intensitySlider)
 
         content.addSubview(label("Density", 184))
-        slider(densitySlider, 180, AuroraPreferences.densityRange, preferences.density)
+        slider(densitySlider, 180, AuroraPreferences.densityRange, AuroraPreferences.densityRange.lowerBound)
         content.addSubview(densitySlider)
 
         // Size — element scale for Matrix Rain glyphs, Fireflies, Caustics.
         content.addSubview(label("Size", 140))
-        slider(sizeSlider, 136, AuroraPreferences.sizeRange, preferences.size)
+        slider(sizeSlider, 136, AuroraPreferences.sizeRange, AuroraPreferences.sizeRange.lowerBound)
         content.addSubview(sizeSlider)
 
         // Performance — caps render resolution + frame rate to free up the GPU.
         content.addSubview(label("Performance", 96))
         performancePopup.frame = NSRect(x: 130, y: 92, width: 230, height: 26)
         performancePopup.addItems(withTitles: AuroraPerformance.all.map { $0.name })
-        performancePopup.selectItem(at: preferences.performanceIndex)
         content.addSubview(performancePopup)
 
         // Buttons.
@@ -417,14 +444,16 @@ final class AuroraConfigController: NSObject {
     }
 
     @objc private func save() {
-        preferences.sceneIndex = scenePopup.indexOfSelectedItem
-        preferences.paletteIndex = palettePopup.indexOfSelectedItem
-        preferences.speed = Float(speedSlider.doubleValue)
-        preferences.intensity = Float(intensitySlider.doubleValue)
-        preferences.density = Float(densitySlider.doubleValue)
-        preferences.size = Float(sizeSlider.doubleValue)
-        preferences.performanceIndex = performancePopup.indexOfSelectedItem
-        preferences.synchronize()
+        if let preferences {
+            preferences.sceneIndex = scenePopup.indexOfSelectedItem
+            preferences.paletteIndex = palettePopup.indexOfSelectedItem
+            preferences.speed = Float(speedSlider.doubleValue)
+            preferences.intensity = Float(intensitySlider.doubleValue)
+            preferences.density = Float(densitySlider.doubleValue)
+            preferences.size = Float(sizeSlider.doubleValue)
+            preferences.performanceIndex = performancePopup.indexOfSelectedItem
+            preferences.synchronize()
+        }
         dismiss()
     }
 
@@ -433,14 +462,15 @@ final class AuroraConfigController: NSObject {
     }
 
     private func dismiss() {
-        onClose()
-        // orderOut (not close) so the reused window survives for the next open.
-        // End the sheet first if the host attached it as one; otherwise just hide.
+        // End the sheet, then close() — not orderOut. close() fully clears the
+        // window's sheet/visibility bookkeeping that would otherwise make the
+        // host refuse the next beginSheet; isReleasedWhenClosed=false keeps the
+        // singleton object alive for reuse. Let the live view re-read settings so
+        // a running preview reflects the change immediately.
         if let parent = window.sheetParent {
             parent.endSheet(window)
         }
-        if window.isVisible {
-            window.orderOut(nil)
-        }
+        window.close()
+        currentView?.reloadFromPreferences()
     }
 }

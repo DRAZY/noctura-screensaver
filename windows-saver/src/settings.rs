@@ -10,11 +10,12 @@ use windows::Win32::System::Registry::{
     KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
 };
 
-/// 13 scenes, in the shader's `u.scene` dispatch order.
-pub const SCENES: [&str; 13] = [
+/// 16 scenes, in the shader's `u.scene` dispatch order.
+pub const SCENES: [&str; 16] = [
     "Aurora Drift", "Northern Lights", "Deep Space", "Particle Drift", "Plasma Field",
     "Matrix Rain", "Fireflies", "Black Hole", "Hyperspace Tunnel", "Synthwave",
-    "Kaleidoscope", "Caustics", "Polar Clock",
+    "Kaleidoscope", "Caustics", "Polar Clock", "Liquid Chrome", "Nebula Drift",
+    "Fractal Bloom",
 ];
 
 /// A three-stop color palette the scenes blend between.
@@ -95,7 +96,7 @@ impl Settings {
     /// keys are trivially inspectable in regedit.
     pub fn load() -> Settings {
         let mut s = Settings::default();
-        if let Some(v) = read_str("sceneIndex") { if let Ok(n) = v.parse::<i64>() { s.scene = clampi(n, 0, 12) as usize; } }
+        if let Some(v) = read_str("sceneIndex") { if let Ok(n) = v.parse::<i64>() { s.scene = clampi(n, 0, 15) as usize; } }
         if let Some(v) = read_str("paletteIndex") { if let Ok(n) = v.parse::<i64>() { s.palette = clampi(n, 0, 12) as usize; } }
         if let Some(v) = read_str("performanceIndex") { if let Ok(n) = v.parse::<i64>() { s.performance = clampi(n, 0, 3) as usize; } }
         if let Some(v) = read_str("speed") { if let Ok(f) = v.parse::<f32>() { s.speed = clampf(f, SPEED_RANGE); } }

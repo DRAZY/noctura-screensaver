@@ -546,6 +546,107 @@ float3 sceneCaustics(float2 uv0, float aspect) {
     return col * vig;
 }
 
+// Cyclic 3-stop palette (A→B→C→A), shared by the three newer scenes.
+float3 ncCyc(float x) {
+    float f = frac(x);
+    if (f < 0.3333) return lerp(uColorA.rgb, uColorB.rgb, f / 0.3333);
+    if (f < 0.6666) return lerp(uColorB.rgb, uColorC.rgb, (f - 0.3333) / 0.3333);
+    return lerp(uColorC.rgb, uColorA.rgb, (f - 0.6666) / 0.3334);
+}
+
+// ---- Scene 13: Liquid Chrome -----------------------------------------------
+float chromeHeight(float2 p, float t) {
+    float2 q = float2(fbm2(p + float2(0.0, t * 0.12)), fbm2(p + float2(5.2, 1.3) - t * 0.10));
+    float2 r = float2(fbm2(p + 1.6 * q + float2(1.7, 9.2)), fbm2(p + 1.6 * q + float2(8.3, 2.8)));
+    return fbm2(p + 2.0 * r + float2(t * 0.05, 0.0));
+}
+float3 sceneChrome(float2 uv0, float aspect) {
+    float scale = 3.2 / max(uSize, 0.0001);
+    float2 p = float2((uv0.x - 0.5) * aspect, uv0.y - 0.5) * scale;
+    float t = uTime * uSpeed;
+    float e = 0.015 * scale;
+    float h  = chromeHeight(p, t);
+    float hx = chromeHeight(p + float2(e, 0.0), t) - chromeHeight(p - float2(e, 0.0), t);
+    float hy = chromeHeight(p + float2(0.0, e), t) - chromeHeight(p - float2(0.0, e), t);
+    float3 n = normalize(float3(-hx, -hy, e * 4.0));
+    float3 view = float3(0.0, 0.0, 1.0);
+    float3 L = normalize(float3(cos(t * 0.3) * 0.6, sin(t * 0.27) * 0.6, 0.8));
+    float3 H = normalize(L + view);
+    float spec = pow(max(dot(n, H), 0.0), 48.0);
+    float fres = pow(1.0 - max(n.z, 0.0), 3.0);
+    float3 refl = reflect(-view, n);
+    float band = refl.y * 0.5 + 0.5 + h * 0.25;
+    float3 env = ncCyc(band + t * 0.05);
+    float3 base = lerp(uColorA.rgb * 0.5, uColorB.rgb, smoothstep(-0.6, 0.6, h));
+    float3 col = lerp(base, env, clamp(fres + 0.25, 0.0, 1.0));
+    col += spec * (uColorC.rgb * 0.6 + 0.4) * (1.2 * uIntensity);
+    col *= 0.7 + 0.3 * smoothstep(-1.0, 1.0, h);
+    float vig = 1.0 - 0.25 * dot(uv0 - 0.5, uv0 - 0.5);
+    return col * vig;
+}
+
+// ---- Scene 14: Nebula Drift ------------------------------------------------
+float ncStarHash(float2 p) {
+    p = frac(p * float2(123.34, 345.45));
+    p += dot(p, p + 34.345);
+    return frac(p.x * p.y);
+}
+float3 sceneNebula(float2 uv0, float aspect) {
+    float scale = 2.6 / max(uSize, 0.0001);
+    float2 uv = float2((uv0.x - 0.5) * aspect, uv0.y - 0.5);
+    float2 p = uv * scale;
+    float t = uTime * uSpeed;
+    float3 col = uColorA.rgb * 0.18;
+    float2 sg = floor((uv * 2.0 + 0.5) * 90.0);
+    float sh = ncStarHash(sg);
+    float star = smoothstep(0.985, 1.0, sh);
+    float tw = 0.5 + 0.5 * sin(t * 3.0 + sh * 100.0);
+    col += float3(0.7, 0.8, 1.0) * star * tw * 0.9;
+    float thr = lerp(0.45, 0.05, clamp(uDensity, 0.0, 1.0));
+    for (int L = 0; L < 5; L++) {
+        float fl = float(L);
+        float depth = 1.0 + fl * 0.6;
+        float2 q = p / depth + float2(t * 0.02 * (1.0 + fl * 0.3), -t * 0.015 * fl);
+        float2 w = float2(fbm2(q + float2(0.0, t * 0.05)), fbm2(q + float2(3.1, 1.2)));
+        float d = fbm2(q + 1.4 * w);
+        float cloud = smoothstep(thr, thr + 0.55, d * 0.5 + 0.5);
+        float3 tint = ncCyc(d * 0.5 + 0.5 + fl * 0.12 + t * 0.03);
+        col += tint * cloud * (0.55 / depth) * uIntensity;
+    }
+    float vig = 1.0 - 0.3 * dot(uv0 - 0.5, uv0 - 0.5);
+    return col * vig;
+}
+
+// ---- Scene 15: Fractal Bloom -----------------------------------------------
+float3 sceneFractal(float2 uv0, float aspect) {
+    float t = uTime * uSpeed;
+    float zoom = (1.7 + 0.35 * sin(t * 0.1)) * max(uSize, 0.0001);
+    float rot = t * 0.03;
+    float cr = cos(rot), sr = sin(rot);
+    float2 z0 = float2((uv0.x - 0.5) * aspect, uv0.y - 0.5) * zoom;
+    float2 z = float2(z0.x * cr - z0.y * sr, z0.x * sr + z0.y * cr);
+    float2 c = 0.7885 * float2(cos(t * 0.15), sin(t * 0.15));
+    float it = 0.0;
+    float r2 = 0.0;
+    for (int i = 0; i < 128; i++) {
+        z = float2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
+        r2 = dot(z, z);
+        if (r2 > 16.0) break;
+        it += 1.0;
+    }
+    float3 col;
+    if (r2 <= 16.0) {
+        col = uColorA.rgb * (0.18 + 0.12 * r2 / 16.0);
+    } else {
+        float sm = it - log2(log2(r2)) + 4.0;
+        col = ncCyc(sm / 40.0 + t * 0.05);
+        col *= clamp(sm / 22.0, 0.25, 1.4);
+        col += uColorC.rgb * exp(-sm * 0.08) * (0.7 * uIntensity);
+    }
+    float vig = 1.0 - 0.28 * dot(uv0 - 0.5, uv0 - 0.5);
+    return col * vig;
+}
+
 float4 PSMain(VSOut inp) : SV_Target {
     float aspect = uResolution.x / max(uResolution.y, 1.0);
     int s = int(uScene + 0.5);
@@ -562,7 +663,11 @@ float4 PSMain(VSOut inp) : SV_Target {
     else if (s == 9) col = sceneSynthwave(inp.uv, aspect);
     else if (s == 10) col = sceneKaleidoscope(inp.uv, aspect);
     else if (s == 11) col = sceneCaustics(inp.uv, aspect);
-    else             col = scenePolar(inp.uv, aspect);
+    else if (s == 12) col = scenePolar(inp.uv, aspect);
+    else if (s == 13) col = sceneChrome(inp.uv, aspect);
+    else if (s == 14) col = sceneNebula(inp.uv, aspect);
+    else if (s == 15) col = sceneFractal(inp.uv, aspect);
+    else             col = sceneAurora(inp.uv, aspect);
     col += ditherRGB(inp.pos.xy);
     return float4(col, 1.0);
 }

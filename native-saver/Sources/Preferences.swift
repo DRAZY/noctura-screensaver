@@ -24,6 +24,9 @@ struct AuroraScene {
         AuroraScene(name: "Kaleidoscope"),
         AuroraScene(name: "Caustics"),
         AuroraScene(name: "Polar Clock"),
+        AuroraScene(name: "Liquid Chrome"),
+        AuroraScene(name: "Nebula Drift"),
+        AuroraScene(name: "Fractal Bloom"),
     ]
 }
 
