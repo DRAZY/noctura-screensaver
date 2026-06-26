@@ -13,6 +13,16 @@ const STORAGE_KEY = "aurora.settings.v1";
 /** How the time/date overlay is drawn on top of the active scene. */
 export type ClockMode = "off" | "time" | "datetime";
 
+/**
+ * Clock typeface, as a semantic role (not a literal font name) so each platform
+ * — web, macOS, Windows — can map it to its own best modern font. All four are
+ * clean and contemporary; nothing serif or dated.
+ */
+export type ClockFont = "light" | "modern" | "bold" | "mono";
+
+/** Where the clock sits over the scene. */
+export type ClockPosition = "center" | "top" | "bottom" | "bottomRight";
+
 /** App-wide preferences (not per-scene): slideshow + overlays. */
 export interface AuroraPrefs {
   /** Auto-advance through scenes on a timer (Aerial-style slideshow). */
@@ -23,6 +33,12 @@ export interface AuroraPrefs {
   shuffleRandom: boolean;
   /** Clock overlay mode. */
   clock: ClockMode;
+  /** Clock typeface (semantic role mapped to a modern font per platform). */
+  clockFont: ClockFont;
+  /** Clock position over the scene. */
+  clockPosition: ClockPosition;
+  /** 24-hour time (vs. 12-hour with AM/PM). */
+  clock24h: boolean;
   /** Scene ids the user has starred; powers a "favorites only" shuffle. */
   favorites: string[];
   /** When true, shuffle only cycles through favorited scenes. */
@@ -36,6 +52,9 @@ export const DEFAULT_PREFS: AuroraPrefs = {
   shuffleSeconds: 30,
   shuffleRandom: true,
   clock: "off",
+  clockFont: "modern",
+  clockPosition: "bottom",
+  clock24h: false,
   favorites: [],
   shuffleFavoritesOnly: false,
   performance: "auto",

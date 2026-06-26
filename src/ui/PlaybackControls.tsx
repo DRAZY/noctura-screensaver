@@ -1,5 +1,5 @@
 import type { PerformanceMode } from "../engine/types";
-import type { AuroraPrefs, ClockMode } from "../state/settings";
+import type { AuroraPrefs, ClockFont, ClockMode, ClockPosition } from "../state/settings";
 
 /**
  * App-wide playback + overlay controls: the slideshow (shuffle) engine and the
@@ -15,6 +15,20 @@ const CLOCK_OPTIONS: ReadonlyArray<{ value: ClockMode; label: string }> = [
   { value: "off", label: "Off" },
   { value: "time", label: "Time" },
   { value: "datetime", label: "Time + Date" },
+];
+
+const CLOCK_FONT_OPTIONS: ReadonlyArray<{ value: ClockFont; label: string }> = [
+  { value: "light", label: "Light" },
+  { value: "modern", label: "Modern" },
+  { value: "bold", label: "Bold" },
+  { value: "mono", label: "Mono" },
+];
+
+const CLOCK_POSITION_OPTIONS: ReadonlyArray<{ value: ClockPosition; label: string }> = [
+  { value: "center", label: "Center" },
+  { value: "top", label: "Top" },
+  { value: "bottom", label: "Bottom" },
+  { value: "bottomRight", label: "Corner" },
 ];
 
 const PERFORMANCE_OPTIONS: ReadonlyArray<{ value: PerformanceMode; label: string; title: string }> = [
@@ -88,6 +102,51 @@ export function PlaybackControls({ prefs, onChange }: PlaybackControlsProps) {
           ))}
         </div>
       </div>
+
+      {prefs.clock !== "off" && (
+        <>
+          <div className="control-row segmented-row">
+            <span className="control-label">Font</span>
+            <div className="segmented" role="group" aria-label="Clock font">
+              {CLOCK_FONT_OPTIONS.map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  className={prefs.clockFont === o.value ? "seg active" : "seg"}
+                  onClick={() => onChange({ clockFont: o.value })}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="control-row segmented-row">
+            <span className="control-label">Position</span>
+            <div className="segmented" role="group" aria-label="Clock position">
+              {CLOCK_POSITION_OPTIONS.map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  className={prefs.clockPosition === o.value ? "seg active" : "seg"}
+                  onClick={() => onChange({ clockPosition: o.value })}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label className="control-row toggle-row">
+            <span className="control-label">24-hour</span>
+            <input
+              type="checkbox"
+              checked={prefs.clock24h}
+              onChange={(e) => onChange({ clock24h: e.target.checked })}
+            />
+          </label>
+        </>
+      )}
 
       <div className="control-row segmented-row">
         <span className="control-label">Performance</span>

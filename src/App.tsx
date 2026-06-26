@@ -204,10 +204,18 @@ function App() {
       panelOpenRef.current = true;
       setPanelOpen(true);
     }
-    // Optional overlay preview: ?clock=time|datetime
+    // Optional overlay preview/deep-link: ?clock=time|datetime &clockFont=…
+    // &clockPos=… &clock24h=1 (live only, not persisted).
     const urlClock = query?.get("clock");
     if (urlClock === "time" || urlClock === "datetime") {
       const merged: AuroraPrefs = { ...prefsRef.current, clock: urlClock };
+      const f = query?.get("clockFont");
+      if (f === "light" || f === "modern" || f === "bold" || f === "mono") merged.clockFont = f;
+      const pos = query?.get("clockPos");
+      if (pos === "center" || pos === "top" || pos === "bottom" || pos === "bottomRight") {
+        merged.clockPosition = pos;
+      }
+      if (query?.get("clock24h") === "1") merged.clock24h = true;
       prefsRef.current = merged;
       setPrefs(merged);
     }
@@ -271,7 +279,12 @@ function App() {
         ⚙
       </button>
 
-      <ClockOverlay mode={prefs.clock} />
+      <ClockOverlay
+        mode={prefs.clock}
+        font={prefs.clockFont}
+        position={prefs.clockPosition}
+        hour24={prefs.clock24h}
+      />
 
       <SettingsPanel
         open={panelOpen}

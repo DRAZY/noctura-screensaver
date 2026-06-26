@@ -295,12 +295,19 @@
   inset: 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
   pointer-events: none;
   z-index: 5;
   text-shadow: 0 2px 24px rgba(0, 0, 0, 0.6);
+  padding: 6vh 6vw;
+  box-sizing: border-box;
 }
+/* Position variants — where the clock sits over the scene. */
+.clock-pos-center { align-items: center; justify-content: center; }
+.clock-pos-top { align-items: center; justify-content: flex-start; }
+.clock-pos-bottom { align-items: center; justify-content: flex-end; }
+.clock-pos-bottomRight { align-items: flex-end; justify-content: flex-end; }
+.clock-pos-bottomRight .clock-date { text-align: right; }
+
 .clock-time {
   font-size: clamp(56px, 12vw, 168px);
   font-weight: 200;
@@ -316,6 +323,28 @@
   letter-spacing: 0.08em;
   color: rgba(255, 255, 255, 0.78);
 }
+
+/* Typeface roles — each maps to a modern system font, no serifs. */
+.clock-font-light .clock-time { font-weight: 200; }
+.clock-font-light .clock-date { font-weight: 300; }
+.clock-font-modern .clock-time,
+.clock-font-modern .clock-date {
+  font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+}
+.clock-font-modern .clock-time { font-weight: 600; }
+.clock-font-modern .clock-date { font-weight: 500; }
+.clock-font-bold .clock-time,
+.clock-font-bold .clock-date {
+  font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+}
+.clock-font-bold .clock-time { font-weight: 800; letter-spacing: -0.01em; }
+.clock-font-bold .clock-date { font-weight: 700; }
+.clock-font-mono .clock-time,
+.clock-font-mono .clock-date {
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", monospace;
+}
+.clock-font-mono .clock-time { font-weight: 500; letter-spacing: -0.02em; }
+.clock-font-mono .clock-date { font-weight: 400; }
 
 /* About card (creator credit + app summary) */
 .about-card {
