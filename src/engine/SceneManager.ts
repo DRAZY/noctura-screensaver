@@ -78,6 +78,12 @@ export class SceneManager {
   private width = 1;
   private height = 1;
   private running = false;
+  // Render-pause state. When the window/tab is hidden we stop issuing frames
+  // entirely (a screensaver no one can see should cost zero GPU). Browsers
+  // already throttle rAF for hidden tabs, but WKWebView/Tauri may not — this
+  // makes the behavior explicit and frees the GPU when occluded.
+  private paused = false;
+  private pausedAt = 0;
   private rafId: number | null = null;
   private startTime = 0;
   private lastTime = 0;
@@ -142,6 +148,40 @@ export class SceneManager {
     if (typeof window !== "undefined") {
       window.addEventListener("resize", this.handleResize);
     }
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", this.onVisibility);
+    }
+  }
+
+  /** Pause rendering while hidden, resume (seamlessly) when shown again. */
+  private readonly onVisibility = (): void => {
+    if (typeof document === "undefined") return;
+    if (document.hidden) this.pauseRendering();
+    else this.resumeRendering();
+  };
+
+  private pauseRendering(): void {
+    if (!this.running || this.paused) return;
+    this.paused = true;
+    this.pausedAt = this.now();
+    if (this.rafId !== null && typeof cancelAnimationFrame !== "undefined") {
+      cancelAnimationFrame(this.rafId);
+    }
+    this.rafId = null;
+  }
+
+  private resumeRendering(): void {
+    if (!this.running || !this.paused) return;
+    // Shift the scene clock forward by the hidden duration so the animation
+    // resumes exactly where it left off instead of jumping ahead by the gap.
+    const gap = this.now() - this.pausedAt;
+    this.sceneStart += gap;
+    this.startTime += gap;
+    this.lastTime = this.now();
+    this.frameAccumMs = 0;
+    this.smoothedFrameMs = 0; // don't let the long gap read as a slow frame
+    this.paused = false;
+    this.loop();
   }
 
   /**
@@ -315,7 +355,7 @@ export class SceneManager {
   }
 
   private readonly loop = (): void => {
-    if (!this.running) return;
+    if (!this.running || this.paused) return;
     const current = this.now();
     // Raw interval between display-refresh callbacks. This — not the rendered
     // delta — is the load signal: rAF fires every refresh regardless of our
@@ -484,6 +524,9 @@ export class SceneManager {
     this.stop();
     if (typeof window !== "undefined") {
       window.removeEventListener("resize", this.handleResize);
+    }
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.onVisibility);
     }
     for (const id of this.order) {
       const s = this.scenes.get(id)!;
