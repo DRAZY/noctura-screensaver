@@ -46,36 +46,37 @@ void main() {
   float aspect = uResolution.x / max(uResolution.y, 1.0);
   float t = uTime * uSpeed;
 
-  // Breathing zoom + slowly rotating frame.
-  float zoom = (1.7 + 0.35 * sin(t * 0.1)) * uScale;
-  float rot = t * 0.03;
-  float cr = cos(rot), sr = sin(rot);
-  vec2 z0 = vec2((vUv.x - 0.5) * aspect, vUv.y - 0.5) * zoom;
-  vec2 z = vec2(z0.x * cr - z0.y * sr, z0.x * sr + z0.y * cr);
+  // Zoomed in so the dendritic structure fills the frame.
+  float zoom = 1.3 * uScale;
+  vec2 z = vec2((vUv.x - 0.5) * aspect, vUv.y - 0.5) * zoom;
 
-  // Seed orbiting the classic radius-0.7885 circle → continuous re-bloom.
-  vec2 c = 0.7885 * vec2(cos(t * 0.15), sin(t * 0.15));
+  // Seed animated near a beautiful dendritic value → continuous re-bloom.
+  vec2 c = vec2(-0.4, 0.6) + 0.12 * vec2(cos(t * 0.13), sin(t * 0.17));
 
+  // Orbit trap (closest approach of the orbit to the origin) → glowing veins.
+  float trap = 1e9;
   float it = 0.0;
   float r2 = 0.0;
-  for (int i = 0; i < 128; i++) {
+  for (int i = 0; i < 100; i++) {
     z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
     r2 = dot(z, z);
-    if (r2 > 16.0) break;
+    trap = min(trap, length(z));
+    if (r2 > 64.0) break;
     it += 1.0;
   }
 
   vec3 col;
-  if (r2 <= 16.0) {
-    // Interior: deep, lightly shaded by the last orbit radius.
-    col = uColorA * (0.18 + 0.12 * r2 / 16.0);
+  if (r2 <= 64.0) {
+    // Interior, lit by the orbit trap so it glows from within.
+    col = cyc(trap * 2.0 + t * 0.05) * (0.3 + 0.6 * exp(-trap * 3.0));
   } else {
     // Smooth (continuous) escape time → no iteration banding.
     float sm = it - log2(log2(r2)) + 4.0;
-    col = cyc(sm / 40.0 + t * 0.05);
-    col *= clamp(sm / 22.0, 0.25, 1.4);
-    // Soft bloom hugging the boundary (low escape time).
-    col += uColorC * exp(-sm * 0.08) * (0.7 * uIntensity);
+    col = cyc(sm * 0.04 + t * 0.05);
+    col *= 0.4 + 0.6 * sin(sm * 0.3) * sin(sm * 0.3);          // banded contrast
+    col += uColorC * exp(-trap * 4.0) * (1.2 * uIntensity);    // bloom on the veins
+    col += vec3(1.0) * pow(max(0.0, 1.0 - sm * 0.05), 3.0) * 0.3;
+    col *= exp(-sm * 0.012);                                   // darken far exterior
   }
 
   float vig = 1.0 - 0.28 * dot(vUv - 0.5, vUv - 0.5);

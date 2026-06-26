@@ -601,97 +601,115 @@ enum AuroraShaderSource {
     }
 
     // ---- Scene 13: Liquid Chrome -------------------------------------------
-    // Domain-warped fbm height field, differentiated to a normal and lit as
-    // polished metal (moving specular + Fresnel-reflected palette environment).
+    // Low-frequency warped surface reflecting a studio environment → big smooth
+    // mercury blobs that catch a crisp horizon highlight over a dark metal body.
     static float chromeHeight(float2 p, float t) {
-        float2 q = float2(fbm2(p + float2(0.0, t * 0.12)), fbm2(p + float2(5.2, 1.3) - t * 0.10));
-        float2 r = float2(fbm2(p + 1.6 * q + float2(1.7, 9.2)), fbm2(p + 1.6 * q + float2(8.3, 2.8)));
-        return fbm2(p + 2.0 * r + float2(t * 0.05, 0.0));
+        float2 w = float2(snoise(p * 0.18 + float2(0.0, t * 0.10)), snoise(p * 0.18 + float2(3.3, -t * 0.08)));
+        return snoise(p * 0.22 + 1.2 * w);
+    }
+    static float3 chromeEnv(float3 r) {
+        float y = r.y;
+        float g = smoothstep(-0.7, 0.7, y);
+        float3 c = mix(float3(0.02, 0.025, 0.035), float3(0.55, 0.62, 0.72), g);
+        c += float3(1.0) * smoothstep(0.06, 0.0, abs(y)) * 0.8;
+        float2 lp = float2(r.x + 0.4, r.y - 0.55);
+        c += float3(1.0) * smoothstep(0.5, 0.0, length(lp)) * 0.7;
+        return c;
     }
     static float3 sceneChrome(float2 uv0, constant Uniforms& u, float aspect) {
-        float scale = 3.2 / max(u.size, 0.0001);
+        float scale = 1.2 / max(u.size, 0.0001);
         float2 p = float2((uv0.x - 0.5) * aspect, uv0.y - 0.5) * scale;
         float t = u.time * u.speed;
-        float e = 0.015 * scale;
-        float h  = chromeHeight(p, t);
+        float e = 0.02 * scale;
         float hx = chromeHeight(p + float2(e, 0.0), t) - chromeHeight(p - float2(e, 0.0), t);
         float hy = chromeHeight(p + float2(0.0, e), t) - chromeHeight(p - float2(0.0, e), t);
-        float3 n = normalize(float3(-hx, -hy, e * 4.0));
+        float3 n = normalize(float3(-hx, -hy, e * 1.5));
         float3 view = float3(0.0, 0.0, 1.0);
-        float3 L = normalize(float3(cos(t * 0.3) * 0.6, sin(t * 0.27) * 0.6, 0.8));
-        float3 H = normalize(L + view);
-        float spec = pow(max(dot(n, H), 0.0), 48.0);
-        float fres = pow(1.0 - max(n.z, 0.0), 3.0);
         float3 refl = reflect(-view, n);
-        float band = refl.y * 0.5 + 0.5 + h * 0.25;
-        float3 env = ncCyc(u, band + t * 0.05);
-        float3 base = mix(u.colorA.rgb * 0.5, u.colorB.rgb, smoothstep(-0.6, 0.6, h));
-        float3 col = mix(base, env, clamp(fres + 0.25, 0.0, 1.0));
-        col += spec * (u.colorC.rgb * 0.6 + 0.4) * (1.2 * u.intensity);
-        col *= 0.7 + 0.3 * smoothstep(-1.0, 1.0, h);
+        float3 col = chromeEnv(refl);
+        float3 tint = ncCyc(u, refl.y * 0.5 + 0.5 + t * 0.04);
+        col = mix(col, col * tint * 1.6, 0.25);
+        float3 L = normalize(float3(cos(t * 0.25) * 0.7, 0.5 + 0.3 * sin(t * 0.2), 0.6));
+        float3 H = normalize(L + view);
+        float spec = pow(max(dot(n, H), 0.0), 200.0);
+        col += float3(1.0) * spec * 2.0 * u.intensity;
+        float fres = pow(1.0 - max(n.z, 0.0), 4.0);
+        col += tint * fres * 0.3;
         float vig = 1.0 - 0.25 * dot(uv0 - 0.5, uv0 - 0.5);
         return col * vig;
     }
 
     // ---- Scene 14: Nebula Drift --------------------------------------------
-    // Five parallax fbm cloud layers + a sparse twinkling starfield.
-    static float ncStarHash(float2 p) {
-        p = fract(p * float2(123.34, 345.45));
-        p += dot(p, p + 34.345);
-        return fract(p.x * p.y);
+    // Warped fbm gas with dust lanes, thresholded to glowing HDR filaments over
+    // black void, multi-hued, with cyan-white cores and a point-star field.
+    static float ncStarField(float2 uv, float t) {
+        float s = 0.0;
+        for (int k = 0; k < 2; k++) {
+            float sc = 110.0 + float(k) * 160.0;
+            float2 g = uv * sc;
+            float2 cell = floor(g);
+            float2 f = fract(g) - 0.5;
+            float h = hash21(cell + float(k) * 37.0);
+            if (h > 0.88) {
+                float2 off = (float2(hash21(cell + 1.3), hash21(cell + 4.7)) - 0.5) * 0.7;
+                float d = length(f - off);
+                float bright = (h - 0.88) / 0.12;
+                s += smoothstep(0.08, 0.0, d) * bright * (0.5 + 0.5 * sin(t * 2.0 + h * 60.0));
+            }
+        }
+        return s;
     }
     static float3 sceneNebula(float2 uv0, constant Uniforms& u, float aspect) {
-        float scale = 2.6 / max(u.size, 0.0001);
+        float scale = 2.0 / max(u.size, 0.0001);
         float2 uv = float2((uv0.x - 0.5) * aspect, uv0.y - 0.5);
         float2 p = uv * scale;
         float t = u.time * u.speed;
-        float3 col = u.colorA.rgb * 0.18;
-        float2 sg = floor((uv * 2.0 + 0.5) * 90.0);
-        float sh = ncStarHash(sg);
-        float star = smoothstep(0.985, 1.0, sh);
-        float tw = 0.5 + 0.5 * sin(t * 3.0 + sh * 100.0);
-        col += float3(0.7, 0.8, 1.0) * star * tw * 0.9;
-        float thr = mix(0.45, 0.05, clamp(u.density, 0.0, 1.0));
-        for (int L = 0; L < 5; L++) {
-            float fl = float(L);
-            float depth = 1.0 + fl * 0.6;
-            float2 q = p / depth + float2(t * 0.02 * (1.0 + fl * 0.3), -t * 0.015 * fl);
-            float2 w = float2(fbm2(q + float2(0.0, t * 0.05)), fbm2(q + float2(3.1, 1.2)));
-            float d = fbm2(q + 1.4 * w);
-            float cloud = smoothstep(thr, thr + 0.55, d * 0.5 + 0.5);
-            float3 tint = ncCyc(u, d * 0.5 + 0.5 + fl * 0.12 + t * 0.03);
-            col += tint * cloud * (0.55 / depth) * u.intensity;
-        }
-        float vig = 1.0 - 0.3 * dot(uv0 - 0.5, uv0 - 0.5);
+        float3 col = float3(0.0);
+        float2 w = float2(fbm2(p * 0.5 + float2(0.0, t * 0.05)), fbm2(p * 0.5 + float2(5.2, 1.3) - t * 0.04));
+        float d = fbm2(p * 0.7 + 1.7 * w);
+        float dust = fbm2(p * 1.4 + 3.1 * w + float2(11.0, 4.0));
+        float voidThr = mix(0.46, 0.22, clamp(u.density, 0.0, 1.0));
+        float dens = clamp((d * 0.5 + 0.5 - voidThr - 0.34 * max(dust, 0.0)) / 0.62, 0.0, 1.0);
+        float emission = pow(dens, 1.9);
+        float hue = fbm2(p * 0.30 + float2(t * 0.02, 5.0)) * 0.6 + 0.5;
+        float3 gas = ncCyc(u, hue + 0.25 * d);
+        col += gas * emission * 3.2 * u.intensity;
+        col += mix(float3(0.6, 0.9, 1.0), float3(1.0, 0.96, 0.9), hue) * pow(dens, 5.0) * 2.0;
+        float glow = exp(-dot(uv, uv) * 0.9);
+        col += mix(u.colorB.rgb, u.colorC.rgb, 0.4) * glow * 0.5;
+        col += float3(0.9, 0.95, 1.0) * ncStarField(uv, t);
+        col = col / (1.0 + col * 0.30);
+        float vig = 1.0 - 0.28 * dot(uv0 - 0.5, uv0 - 0.5);
         return col * vig;
     }
 
     // ---- Scene 15: Fractal Bloom -------------------------------------------
-    // Animated Julia set; seed orbits radius 0.7885; smooth escape-time color.
+    // Frame-filling animated Julia set; orbit-trap glow + smooth escape-time color.
     static float3 sceneFractal(float2 uv0, constant Uniforms& u, float aspect) {
         float t = u.time * u.speed;
-        float zoom = (1.7 + 0.35 * sin(t * 0.1)) * max(u.size, 0.0001);
-        float rot = t * 0.03;
-        float cr = cos(rot), sr = sin(rot);
-        float2 z0 = float2((uv0.x - 0.5) * aspect, uv0.y - 0.5) * zoom;
-        float2 z = float2(z0.x * cr - z0.y * sr, z0.x * sr + z0.y * cr);
-        float2 c = 0.7885 * float2(cos(t * 0.15), sin(t * 0.15));
+        float zoom = 1.3 * max(u.size, 0.0001);
+        float2 z = float2((uv0.x - 0.5) * aspect, uv0.y - 0.5) * zoom;
+        float2 c = float2(-0.4, 0.6) + 0.12 * float2(cos(t * 0.13), sin(t * 0.17));
+        float trap = 1e9;
         float it = 0.0;
         float r2 = 0.0;
-        for (int i = 0; i < 128; i++) {
+        for (int i = 0; i < 100; i++) {
             z = float2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
             r2 = dot(z, z);
-            if (r2 > 16.0) break;
+            trap = min(trap, length(z));
+            if (r2 > 64.0) break;
             it += 1.0;
         }
         float3 col;
-        if (r2 <= 16.0) {
-            col = u.colorA.rgb * (0.18 + 0.12 * r2 / 16.0);
+        if (r2 <= 64.0) {
+            col = ncCyc(u, trap * 2.0 + t * 0.05) * (0.3 + 0.6 * exp(-trap * 3.0));
         } else {
             float sm = it - log2(log2(r2)) + 4.0;
-            col = ncCyc(u, sm / 40.0 + t * 0.05);
-            col *= clamp(sm / 22.0, 0.25, 1.4);
-            col += u.colorC.rgb * exp(-sm * 0.08) * (0.7 * u.intensity);
+            col = ncCyc(u, sm * 0.04 + t * 0.05);
+            col *= 0.4 + 0.6 * sin(sm * 0.3) * sin(sm * 0.3);
+            col += u.colorC.rgb * exp(-trap * 4.0) * (1.2 * u.intensity);
+            col += float3(1.0) * pow(max(0.0, 1.0 - sm * 0.05), 3.0) * 0.3;
+            col *= exp(-sm * 0.012);
         }
         float vig = 1.0 - 0.28 * dot(uv0 - 0.5, uv0 - 0.5);
         return col * vig;

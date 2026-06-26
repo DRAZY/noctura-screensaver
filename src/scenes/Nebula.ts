@@ -5,12 +5,12 @@ import { SIMPLEX_2D, FBM_2D, DITHER } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
 
 /**
- * Nebula Drift — a deep-space gas cloud with parallax depth. Five domain-warped
- * fbm layers drift at different rates and scales, stacked back-to-front so the
- * cloud feels volumetric, then lit additively through the palette so the densest
- * filaments glow. A sparse twinkling starfield sits behind it. Faux-volumetric
- * (layered 2D, not a raymarch) so it stays smooth on any GPU while reading as
- * genuinely three-dimensional.
+ * Nebula Drift — a luminous interstellar gas cloud. Domain-warped fbm builds the
+ * gas; a second noise field carves dark dust lanes; the result is thresholded so
+ * the voids fall to black and the dense filaments glow with HDR cores tonemapped
+ * back into range. A separate low-frequency field drives the hue so the cloud is
+ * genuinely multi-colored (not one flat wash), with cyan-white hot cores, a soft
+ * galactic glow, and a sparse twinkling point-starfield behind it.
  */
 
 export const VERTEX_SHADER = /* glsl */ `
@@ -38,6 +38,12 @@ ${SIMPLEX_2D}
 ${FBM_2D}
 ${DITHER}
 
+float hash21(vec2 p) {
+  p = fract(p * vec2(123.34, 345.45));
+  p += dot(p, p + 34.345);
+  return fract(p.x * p.y);
+}
+
 vec3 cyc(float x) {
   float f = fract(x);
   if (f < 0.3333) return mix(uColorA, uColorB, f / 0.3333);
@@ -45,10 +51,24 @@ vec3 cyc(float x) {
   return mix(uColorC, uColorA, (f - 0.6666) / 0.3334);
 }
 
-float starHash(vec2 p) {
-  p = fract(p * vec2(123.34, 345.45));
-  p += dot(p, p + 34.345);
-  return fract(p.x * p.y);
+// Sparse point stars: per-cell random position with a soft radial falloff and a
+// twinkle. Two scales for depth. (Point-based, so no blocky cell artifacts.)
+float starField(vec2 uv, float t) {
+  float s = 0.0;
+  for (int k = 0; k < 2; k++) {
+    float sc = 110.0 + float(k) * 160.0;
+    vec2 g = uv * sc;
+    vec2 cell = floor(g);
+    vec2 f = fract(g) - 0.5;
+    float h = hash21(cell + float(k) * 37.0);
+    if (h > 0.88) {
+      vec2 off = (vec2(hash21(cell + 1.3), hash21(cell + 4.7)) - 0.5) * 0.7;
+      float d = length(f - off);
+      float bright = (h - 0.88) / 0.12;
+      s += smoothstep(0.08, 0.0, d) * bright * (0.5 + 0.5 * sin(t * 2.0 + h * 60.0));
+    }
+  }
+  return s;
 }
 
 void main() {
@@ -57,53 +77,53 @@ void main() {
   vec2 p = uv * uScale;
   float t = uTime * uSpeed;
 
-  // Deep base tint.
-  vec3 col = uColorA * 0.18;
+  vec3 col = vec3(0.0);
+  vec2 w = vec2(fbm2(p * 0.5 + vec2(0.0, t * 0.05)), fbm2(p * 0.5 + vec2(5.2, 1.3) - t * 0.04));
+  float d = fbm2(p * 0.7 + 1.7 * w);
+  float dust = fbm2(p * 1.4 + 3.1 * w + vec2(11.0, 4.0));
 
-  // Sparse twinkling stars behind the gas.
-  vec2 sg = floor((uv * 2.0 + 0.5) * 90.0);
-  float sh = starHash(sg);
-  float star = smoothstep(0.985, 1.0, sh);
-  float tw = 0.5 + 0.5 * sin(t * 3.0 + sh * 100.0);
-  col += vec3(0.7, 0.8, 1.0) * star * tw * 0.9;
+  // Density slider lowers the void threshold → more of the frame fills with gas.
+  float voidThr = mix(0.46, 0.22, clamp(uDensity, 0.0, 1.0));
+  float dens = clamp((d * 0.5 + 0.5 - voidThr - 0.34 * max(dust, 0.0)) / 0.62, 0.0, 1.0);
+  float emission = pow(dens, 1.9);
 
-  // Parallax cloud layers, back (faint, slow, large) to front (bright, fast).
-  float thr = mix(0.45, 0.05, clamp(uDensity, 0.0, 1.0));
-  for (int L = 0; L < 5; L++) {
-    float fl = float(L);
-    float depth = 1.0 + fl * 0.6;
-    vec2 q = p / depth + vec2(t * 0.02 * (1.0 + fl * 0.3), -t * 0.015 * fl);
-    // Domain warp so the gas curls into filaments.
-    vec2 w = vec2(fbm2(q + vec2(0.0, t * 0.05)), fbm2(q + vec2(3.1, 1.2)));
-    float d = fbm2(q + 1.4 * w);
-    float cloud = smoothstep(thr, thr + 0.55, d * 0.5 + 0.5);
-    vec3 tint = cyc(d * 0.5 + 0.5 + fl * 0.12 + t * 0.03);
-    col += tint * cloud * (0.55 / depth) * uIntensity;
-  }
+  float hue = fbm2(p * 0.30 + vec2(t * 0.02, 5.0)) * 0.6 + 0.5;
+  vec3 gas = cyc(hue + 0.25 * d);
+  col += gas * emission * 3.2 * uIntensity;
 
-  float vig = 1.0 - 0.3 * dot(vUv - 0.5, vUv - 0.5);
+  // Hot cyan-white cores in the densest gas.
+  col += mix(vec3(0.6, 0.9, 1.0), vec3(1.0, 0.96, 0.9), hue) * pow(dens, 5.0) * 2.0;
+
+  // Broad soft galactic glow so deep space isn't pure black.
+  float glow = exp(-dot(uv, uv) * 0.9);
+  col += mix(uColorB, uColorC, 0.4) * glow * 0.5;
+
+  col += vec3(0.9, 0.95, 1.0) * starField(uv, t);
+  col = col / (1.0 + col * 0.30); // soft tonemap for the HDR cores
+
+  float vig = 1.0 - 0.28 * dot(vUv - 0.5, vUv - 0.5);
   gl_FragColor = vec4(col * vig + dither(gl_FragCoord.xy), 1.0);
 }
 `;
 
 const DEFAULT_SPEED = 0.4;
-const DEFAULT_SCALE = 2.6;
+const DEFAULT_SCALE = 2.0;
 const DEFAULT_DENSITY = 0.5;
 const DEFAULT_INTENSITY = 1.0;
 
 export class Nebula extends FullscreenScene {
   readonly id = "nebula";
   readonly name = "Nebula Drift";
-  readonly description = "A layered interstellar gas cloud with parallax depth and starlight.";
+  readonly description = "A luminous, multi-colored interstellar gas cloud.";
 
   readonly parameters: ReadonlyArray<Parameter> = [
     { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 1.2, step: 0.01, default: DEFAULT_SPEED },
-    { kind: "range", id: "scale", label: "Scale", min: 1.2, max: 6.0, step: 0.1, default: DEFAULT_SCALE },
+    { kind: "range", id: "scale", label: "Scale", min: 1.0, max: 5.0, step: 0.05, default: DEFAULT_SCALE },
     { kind: "range", id: "density", label: "Density", min: 0.0, max: 1.0, step: 0.01, default: DEFAULT_DENSITY },
     { kind: "range", id: "intensity", label: "Glow", min: 0.0, max: 1.5, step: 0.01, default: DEFAULT_INTENSITY },
     { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "nebula" },
     { kind: "color", id: "colorA", label: "Color A", default: "#0a0418" },
-    { kind: "color", id: "colorB", label: "Color B", default: "#7b2ff7" },
+    { kind: "color", id: "colorB", label: "Color B", default: "#3a6ff7" },
     { kind: "color", id: "colorC", label: "Color C", default: "#f76fd4" },
   ];
 

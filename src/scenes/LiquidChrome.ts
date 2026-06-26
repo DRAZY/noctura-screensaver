@@ -1,16 +1,16 @@
 import * as THREE from "three";
 import type { Parameter, ParameterValue } from "../engine/types";
 import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
-import { SIMPLEX_2D, FBM_2D, DITHER } from "../engine/shaders/noise.glsl";
+import { SIMPLEX_2D, DITHER } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
 
 /**
- * Liquid Chrome — a molten metallic surface. A domain-warped fbm height field is
- * differentiated into a per-pixel normal, then lit as polished metal: a moving
- * key light gives a sharp specular streak, Fresnel reflects a palette-tinted
- * environment at grazing angles, and height-based occlusion adds depth. The
- * result is a slow, premium, mirror-like flow — same smooth/cinematic vibe as
- * the rest of the collection, with a luxe metallic twist.
+ * Liquid Chrome — flowing molten mercury. A very-low-frequency, domain-warped
+ * noise surface is differentiated into a per-pixel normal and used to reflect a
+ * clean studio environment (dark floor, bright sky, a crisp horizon highlight
+ * line, and a soft key-light softbox). Big rounded blobs catch the horizon as a
+ * curving bright streak — the signature "chrome" read — over a dark metal body,
+ * with a tight specular and a palette-tinted Fresnel rim. Slow, premium, liquid.
  */
 
 export const VERTEX_SHADER = /* glsl */ `
@@ -34,10 +34,8 @@ uniform vec3  uColorB;
 uniform vec3  uColorC;
 
 ${SIMPLEX_2D}
-${FBM_2D}
 ${DITHER}
 
-// Cyclic 3-stop palette (A→B→C→A) for the reflected environment band.
 vec3 cyc(float x) {
   float f = fract(x);
   if (f < 0.3333) return mix(uColorA, uColorB, f / 0.3333);
@@ -45,12 +43,22 @@ vec3 cyc(float x) {
   return mix(uColorC, uColorA, (f - 0.6666) / 0.3334);
 }
 
-// Domain-warped height field — two folds of fbm so the metal ripples and pools
-// instead of looking like flat noise.
-float heightField(vec2 p, float t) {
-  vec2 q = vec2(fbm2(p + vec2(0.0, t * 0.12)), fbm2(p + vec2(5.2, 1.3) - t * 0.10));
-  vec2 r = vec2(fbm2(p + 1.6 * q + vec2(1.7, 9.2)), fbm2(p + 1.6 * q + vec2(8.3, 2.8)));
-  return fbm2(p + 2.0 * r + vec2(t * 0.05, 0.0));
+// Low-frequency, slowly-warped height field → big smooth liquid forms.
+float heightF(vec2 p, float t) {
+  vec2 w = vec2(snoise(p * 0.18 + vec2(0.0, t * 0.10)), snoise(p * 0.18 + vec2(3.3, -t * 0.08)));
+  return snoise(p * 0.22 + 1.2 * w);
+}
+
+// Studio environment reflected by the surface: dark floor → bright sky, a crisp
+// horizon highlight, and one soft key light. This is what makes metal read as chrome.
+vec3 envMap(vec3 r) {
+  float y = r.y;
+  float g = smoothstep(-0.7, 0.7, y);
+  vec3 c = mix(vec3(0.02, 0.025, 0.035), vec3(0.55, 0.62, 0.72), g);
+  c += vec3(1.0) * smoothstep(0.06, 0.0, abs(y)) * 0.8;
+  vec2 lp = vec2(r.x + 0.4, r.y - 0.55);
+  c += vec3(1.0) * smoothstep(0.5, 0.0, length(lp)) * 0.7;
+  return c;
 }
 
 void main() {
@@ -58,31 +66,25 @@ void main() {
   vec2 p = vec2((vUv.x - 0.5) * aspect, vUv.y - 0.5) * uScale;
   float t = uTime * uSpeed;
 
-  // Central-difference normal from the height field.
-  float e = 0.015 * uScale;
-  float h  = heightField(p, t);
-  float hx = heightField(p + vec2(e, 0.0), t) - heightField(p - vec2(e, 0.0), t);
-  float hy = heightField(p + vec2(0.0, e), t) - heightField(p - vec2(0.0, e), t);
-  vec3 n = normalize(vec3(-hx, -hy, e * 4.0));
+  float e = 0.02 * uScale;
+  float h  = heightF(p, t);
+  float hx = heightF(p + vec2(e, 0.0), t) - heightF(p - vec2(e, 0.0), t);
+  float hy = heightF(p + vec2(0.0, e), t) - heightF(p - vec2(0.0, e), t);
+  vec3 n = normalize(vec3(-hx, -hy, e * 1.5));
 
-  // Polished-metal lighting: moving key light → tight specular; Fresnel → env.
   vec3 view = vec3(0.0, 0.0, 1.0);
-  vec3 L = normalize(vec3(cos(t * 0.3) * 0.6, sin(t * 0.27) * 0.6, 0.8));
-  vec3 H = normalize(L + view);
-  float spec = pow(max(dot(n, H), 0.0), 48.0);
-  float fres = pow(1.0 - max(n.z, 0.0), 3.0);
-
-  // Reflected environment: a palette band swept by the reflection vector.
   vec3 refl = reflect(-view, n);
-  float band = refl.y * 0.5 + 0.5 + h * 0.25;
-  vec3 env = cyc(band + t * 0.05);
+  vec3 col = envMap(refl);
+  vec3 tint = cyc(refl.y * 0.5 + 0.5 + t * 0.04);
+  col = mix(col, col * tint * 1.6, 0.25);
 
-  vec3 base = mix(uColorA * 0.5, uColorB, smoothstep(-0.6, 0.6, h));
-  vec3 col = mix(base, env, clamp(fres + 0.25, 0.0, 1.0));
-  col += spec * (uColorC * 0.6 + 0.4) * (1.2 * uIntensity);
+  vec3 L = normalize(vec3(cos(t * 0.25) * 0.7, 0.5 + 0.3 * sin(t * 0.2), 0.6));
+  vec3 H = normalize(L + view);
+  float spec = pow(max(dot(n, H), 0.0), 200.0);
+  col += vec3(1.0) * spec * 2.0 * uIntensity;
 
-  // Height-based ambient occlusion for depth in the troughs.
-  col *= 0.7 + 0.3 * smoothstep(-1.0, 1.0, h);
+  float fres = pow(1.0 - max(n.z, 0.0), 4.0);
+  col += tint * fres * 0.3;
 
   float vig = 1.0 - 0.25 * dot(vUv - 0.5, vUv - 0.5);
   gl_FragColor = vec4(col * vig + dither(gl_FragCoord.xy), 1.0);
@@ -90,22 +92,22 @@ void main() {
 `;
 
 const DEFAULT_SPEED = 0.35;
-const DEFAULT_SCALE = 3.2;
+const DEFAULT_SCALE = 1.2;
 const DEFAULT_INTENSITY = 1.0;
 
 export class LiquidChrome extends FullscreenScene {
   readonly id = "liquidchrome";
   readonly name = "Liquid Chrome";
-  readonly description = "Molten mirror metal — domain-warped, lit, endlessly flowing.";
+  readonly description = "Flowing molten mercury under crisp studio light.";
 
   readonly parameters: ReadonlyArray<Parameter> = [
     { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 1.2, step: 0.01, default: DEFAULT_SPEED },
-    { kind: "range", id: "scale", label: "Scale", min: 1.5, max: 7.0, step: 0.1, default: DEFAULT_SCALE },
+    { kind: "range", id: "scale", label: "Scale", min: 0.6, max: 3.0, step: 0.05, default: DEFAULT_SCALE },
     { kind: "range", id: "intensity", label: "Shine", min: 0.0, max: 1.5, step: 0.01, default: DEFAULT_INTENSITY },
     { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "ice" },
-    { kind: "color", id: "colorA", label: "Color A", default: "#040a14" },
-    { kind: "color", id: "colorB", label: "Color B", default: "#3b6fae" },
-    { kind: "color", id: "colorC", label: "Color C", default: "#e9f6ff" },
+    { kind: "color", id: "colorA", label: "Color A", default: "#0a0f1a" },
+    { kind: "color", id: "colorB", label: "Color B", default: "#6f8fc0" },
+    { kind: "color", id: "colorC", label: "Color C", default: "#dbe9ff" },
   ];
 
   protected createMaterial(): THREE.ShaderMaterial {
