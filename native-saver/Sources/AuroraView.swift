@@ -17,6 +17,16 @@ final class AuroraView: ScreenSaverView {
     let preferences = AuroraPreferences()
     private let renderer: AuroraRenderer?
     private let metalLayer = CAMetalLayer()
+
+    // Clock overlay — pure CoreAnimation text layers above the Metal layer, so
+    // they stay razor-sharp at any resolution and cost nothing on the GPU
+    // (mirrors the WebGL app's DOM overlay). Two layers: time and an optional
+    // date line beneath it.
+    private let clockTimeLayer = CATextLayer()
+    private let clockDateLayer = CATextLayer()
+    private let clockTimeFormatter = DateFormatter()
+    private let clockDateFormatter = DateFormatter()
+    private var lastClockTick = -1
     // Wall-clock timestamp of the previous frame, so animation advances by real
     // elapsed time rather than a fixed 1/60 — any timer jitter from the
     // screensaver framework then no longer shows up as visible stutter.
@@ -76,7 +86,110 @@ final class AuroraView: ScreenSaverView {
             layer?.addSublayer(metalLayer)
             renderer.apply(preferences: preferences)
         }
+        configureClockLayers()
         updateLayerGeometry()
+    }
+
+    // MARK: - Clock overlay
+
+    /// One-time setup of the static text-layer properties (color, shadow, etc).
+    private func configureClockLayers() {
+        clockDateFormatter.dateFormat = "EEEE, MMMM d"
+        for l in [clockTimeLayer, clockDateLayer] {
+            l.alignmentMode = .center
+            l.foregroundColor = NSColor(white: 1.0, alpha: 0.95).cgColor
+            l.shadowColor = NSColor.black.cgColor
+            l.shadowOpacity = 0.6
+            l.shadowRadius = 12
+            l.shadowOffset = CGSize(width: 0, height: -2)
+            l.isHidden = true
+            layer?.addSublayer(l)
+        }
+    }
+
+    /// The macOS system font for a clock typeface role (matches the app's roles).
+    private func clockFont(role: Int, size: CGFloat) -> NSFont {
+        switch role {
+        case 0: return NSFont.systemFont(ofSize: size, weight: .thin)               // Light
+        case 2: return NSFont.systemFont(ofSize: size, weight: .heavy)              // Bold
+        case 3: return NSFont.monospacedSystemFont(ofSize: size, weight: .medium)   // Mono
+        default: return NSFont.systemFont(ofSize: size, weight: .semibold)          // Modern
+        }
+    }
+
+    /// Refresh the clock text from the current time. Cheap; called each frame but
+    /// only does work when the wall-clock second changes (or when forced after a
+    /// settings change). Hides the layers entirely when the mode is Off.
+    private func updateClockOverlay(force: Bool = false) {
+        let mode = preferences.clockModeIndex
+        if mode == 0 {
+            if !clockTimeLayer.isHidden || !clockDateLayer.isHidden {
+                clockTimeLayer.isHidden = true
+                clockDateLayer.isHidden = true
+            }
+            return
+        }
+        let now = Date()
+        let tick = Int(now.timeIntervalSince1970)
+        if !force && tick == lastClockTick { return }
+        lastClockTick = tick
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true) // no implicit fade/slide on updates
+        clockTimeFormatter.dateFormat = preferences.clock24h ? "HH:mm" : "h:mm a"
+        clockTimeLayer.string = clockTimeFormatter.string(from: now)
+        let showDate = mode == 2
+        clockDateLayer.string = showDate ? clockDateFormatter.string(from: now) : ""
+        clockDateLayer.isHidden = !showDate
+        clockTimeLayer.isHidden = false
+        layoutClockLayers()
+        CATransaction.commit()
+    }
+
+    /// Position and size the clock layers within the current bounds. Separated
+    /// from text refresh so a resize repositions without waiting for the next tick.
+    private func layoutClockLayers() {
+        guard preferences.clockModeIndex != 0 else { return }
+        let backing = window?.backingScaleFactor ?? 2.0
+        let b = bounds
+        let timeSize = min(max(b.height * 0.12, 28), 240)
+        let dateSize = timeSize * 0.20
+        let role = preferences.clockFontIndex
+        let pos = preferences.clockPositionIndex
+        let showDate = preferences.clockModeIndex == 2
+
+        clockTimeLayer.contentsScale = backing
+        clockDateLayer.contentsScale = backing
+        clockTimeLayer.font = clockFont(role: role, size: timeSize)
+        clockTimeLayer.fontSize = timeSize
+        clockDateLayer.font = clockFont(role: role, size: dateSize)
+        clockDateLayer.fontSize = dateSize
+
+        let align: CATextLayerAlignmentMode = (pos == 3) ? .right : .center
+        clockTimeLayer.alignmentMode = align
+        clockDateLayer.alignmentMode = align
+
+        let timeH = timeSize * 1.3
+        let dateH = dateSize * 1.6
+        let gap: CGFloat = 4
+        let blockH = timeH + (showDate ? dateH + gap : 0)
+        let pad = b.height * 0.06
+        let sideInset: CGFloat = (pos == 3) ? b.width * 0.06 : 0
+        let layerW = b.width - sideInset * 2
+
+        // Distance of the block's top from the view's top, by position.
+        let topGap: CGFloat
+        switch pos {
+        case 1: topGap = pad                              // Top
+        case 2, 3: topGap = b.height - pad - blockH       // Bottom / Corner
+        default: topGap = (b.height - blockH) / 2         // Center
+        }
+        // Layer coords are origin-bottom-left, so frame.y is measured up from the
+        // bottom; convert the top-down gaps accordingly.
+        clockTimeLayer.frame = CGRect(x: sideInset, y: b.height - topGap - timeH, width: layerW, height: timeH)
+        if showDate {
+            clockDateLayer.frame = CGRect(x: sideInset, y: b.height - topGap - timeH - gap - dateH, width: layerW, height: dateH)
+        }
     }
 
     // MARK: - Layout
@@ -121,6 +234,7 @@ final class AuroraView: ScreenSaverView {
         let fpy = Float(max(py, 1))
         metalLayer.drawableSize = CGSize(width: CGFloat(fpx), height: CGFloat(fpy))
         renderer?.setResolution(width: fpx, height: fpy)
+        updateClockOverlay(force: true) // reposition/refresh the clock on resize
     }
 
     /// The render scale to use this frame. In Auto mode this is the adaptive
@@ -260,6 +374,7 @@ final class AuroraView: ScreenSaverView {
         // After submitting, fold the last completed frame's GPU time into the
         // Auto controller so resolution/rate track the hardware in real time.
         adaptPerformanceIfNeeded(dt: dt)
+        updateClockOverlay() // throttled to once per wall-clock second
     }
 
     // MARK: - Options sheet
@@ -290,6 +405,7 @@ final class AuroraView: ScreenSaverView {
         resetAdaptiveState() // a mode switch reseeds Auto's convergence
         animationTimeInterval = effectiveFrameInterval()
         updateLayerGeometry()
+        updateClockOverlay(force: true) // apply clock setting changes live
     }
 }
 
@@ -318,10 +434,14 @@ final class AuroraConfigController: NSObject {
     private let densitySlider = NSSlider()
     private let sizeSlider = NSSlider()
     private let performancePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let clockModePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let clockFontPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let clockPositionPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let clock24hCheckbox = NSButton(checkboxWithTitle: "24-hour clock", target: nil, action: nil)
 
     private override init() {
         self.window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 380, height: 416),
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 604),
             styleMask: [.titled],
             backing: .buffered,
             defer: false
@@ -368,66 +488,57 @@ final class AuroraConfigController: NSObject {
         densitySlider.doubleValue = Double(preferences.density)
         sizeSlider.doubleValue = Double(preferences.size)
         performancePopup.selectItem(at: preferences.performanceIndex)
+        clockModePopup.selectItem(at: preferences.clockModeIndex)
+        clockFontPopup.selectItem(at: preferences.clockFontIndex)
+        clockPositionPopup.selectItem(at: preferences.clockPositionIndex)
+        clock24hCheckbox.state = preferences.clock24h ? .on : .off
     }
 
     private func buildUI() {
-        window.title = "Aurora Options"
+        window.title = "Noctura Options"
         let content = NSView(frame: window.contentView!.bounds)
         content.autoresizingMask = [.width, .height]
 
-        func label(_ text: String, _ y: CGFloat) -> NSTextField {
+        // Controls are laid out top-down with a running y cursor so the list is
+        // easy to extend. Values are seeded by refreshFromPreferences() before
+        // every present (the singleton is built before any view has attached).
+        var y: CGFloat = 558
+        let step: CGFloat = 44
+
+        func label(_ text: String) -> NSTextField {
             let l = NSTextField(labelWithString: text)
             l.frame = NSRect(x: 20, y: y, width: 100, height: 20)
             l.alignment = .right
             return l
         }
-        func slider(_ s: NSSlider, _ y: CGFloat, _ range: ClosedRange<Float>, _ value: Float) {
-            s.frame = NSRect(x: 130, y: y, width: 230, height: 24)
+        func popup(_ p: NSPopUpButton, _ titles: [String]) {
+            p.frame = NSRect(x: 130, y: y - 4, width: 230, height: 26)
+            p.removeAllItems()
+            p.addItems(withTitles: titles)
+            content.addSubview(p)
+        }
+        func slider(_ s: NSSlider, _ range: ClosedRange<Float>) {
+            s.frame = NSRect(x: 130, y: y - 4, width: 230, height: 24)
             s.minValue = Double(range.lowerBound)
             s.maxValue = Double(range.upperBound)
-            s.doubleValue = Double(value)
+            content.addSubview(s)
         }
 
-        // Controls are seeded with neutral defaults here; refreshFromPreferences()
-        // sets their real values from the live view's settings before every
-        // present (the singleton is built before any view has attached).
+        content.addSubview(label("Scene")); popup(scenePopup, AuroraScene.all.map { $0.name }); y -= step
+        content.addSubview(label("Style")); popup(palettePopup, AuroraPalette.all.map { $0.name }); y -= step
+        content.addSubview(label("Speed")); slider(speedSlider, AuroraPreferences.speedRange); y -= step
+        content.addSubview(label("Intensity")); slider(intensitySlider, AuroraPreferences.intensityRange); y -= step
+        content.addSubview(label("Density")); slider(densitySlider, AuroraPreferences.densityRange); y -= step
+        content.addSubview(label("Size")); slider(sizeSlider, AuroraPreferences.sizeRange); y -= step
+        content.addSubview(label("Performance")); popup(performancePopup, AuroraPerformance.all.map { $0.name }); y -= step
+        // Clock overlay controls.
+        content.addSubview(label("Clock")); popup(clockModePopup, AuroraClock.modes); y -= step
+        content.addSubview(label("Font")); popup(clockFontPopup, AuroraClock.fonts); y -= step
+        content.addSubview(label("Position")); popup(clockPositionPopup, AuroraClock.positions); y -= step
+        clock24hCheckbox.frame = NSRect(x: 130, y: y, width: 230, height: 22)
+        content.addSubview(clock24hCheckbox)
 
-        // Scene.
-        content.addSubview(label("Scene", 364))
-        scenePopup.frame = NSRect(x: 130, y: 360, width: 230, height: 26)
-        scenePopup.addItems(withTitles: AuroraScene.all.map { $0.name })
-        content.addSubview(scenePopup)
-
-        // Style / palette.
-        content.addSubview(label("Style", 320))
-        palettePopup.frame = NSRect(x: 130, y: 316, width: 230, height: 26)
-        palettePopup.addItems(withTitles: AuroraPalette.all.map { $0.name })
-        content.addSubview(palettePopup)
-
-        content.addSubview(label("Speed", 272))
-        slider(speedSlider, 268, AuroraPreferences.speedRange, AuroraPreferences.speedRange.lowerBound)
-        content.addSubview(speedSlider)
-
-        content.addSubview(label("Intensity", 228))
-        slider(intensitySlider, 224, AuroraPreferences.intensityRange, AuroraPreferences.intensityRange.lowerBound)
-        content.addSubview(intensitySlider)
-
-        content.addSubview(label("Density", 184))
-        slider(densitySlider, 180, AuroraPreferences.densityRange, AuroraPreferences.densityRange.lowerBound)
-        content.addSubview(densitySlider)
-
-        // Size — element scale for Matrix Rain glyphs, Fireflies, Caustics.
-        content.addSubview(label("Size", 140))
-        slider(sizeSlider, 136, AuroraPreferences.sizeRange, AuroraPreferences.sizeRange.lowerBound)
-        content.addSubview(sizeSlider)
-
-        // Performance — caps render resolution + frame rate to free up the GPU.
-        content.addSubview(label("Performance", 96))
-        performancePopup.frame = NSRect(x: 130, y: 92, width: 230, height: 26)
-        performancePopup.addItems(withTitles: AuroraPerformance.all.map { $0.name })
-        content.addSubview(performancePopup)
-
-        // Buttons.
+        // Buttons pinned to the bottom.
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
         cancel.frame = NSRect(x: 150, y: 20, width: 90, height: 30)
         cancel.bezelStyle = .rounded
@@ -452,6 +563,10 @@ final class AuroraConfigController: NSObject {
             preferences.density = Float(densitySlider.doubleValue)
             preferences.size = Float(sizeSlider.doubleValue)
             preferences.performanceIndex = performancePopup.indexOfSelectedItem
+            preferences.clockModeIndex = clockModePopup.indexOfSelectedItem
+            preferences.clockFontIndex = clockFontPopup.indexOfSelectedItem
+            preferences.clockPositionIndex = clockPositionPopup.indexOfSelectedItem
+            preferences.clock24h = (clock24hCheckbox.state == .on)
             preferences.synchronize()
         }
         dismiss()

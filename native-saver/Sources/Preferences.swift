@@ -59,6 +59,17 @@ struct AuroraPerformance {
     ]
 }
 
+/// Clock overlay options, mirroring the WebGL app's clock contract. Indices are
+/// persisted; the name arrays drive the Options popups and the renderer.
+enum AuroraClock {
+    /// Off / Time / Time + Date.
+    static let modes = ["Off", "Time", "Time + Date"]
+    /// Semantic typeface roles, each mapped to a modern macOS system font.
+    static let fonts = ["Light", "Modern", "Bold", "Mono"]
+    /// Where the clock sits over the scene.
+    static let positions = ["Center", "Top", "Bottom", "Corner"]
+}
+
 /// A named color palette (three stops the scenes blend between).
 struct AuroraPalette {
     let name: String
@@ -95,6 +106,10 @@ final class AuroraPreferences {
     private let kDensity = "density"
     private let kSize = "size"
     private let kPerformance = "performanceIndex"
+    private let kClockMode = "clockMode"
+    private let kClockFont = "clockFont"
+    private let kClockPos = "clockPosition"
+    private let kClock24h = "clock24h"
 
     static let speedRange: ClosedRange<Float> = 0.03...1.2
     static let intensityRange: ClosedRange<Float> = 0.0...1.5
@@ -106,6 +121,7 @@ final class AuroraPreferences {
         defaults.register(defaults: [
             kScene: 0, kPalette: 0, kSpeed: 0.3, kIntensity: 1.0, kDensity: 0.5, kSize: 0.85,
             kPerformance: 0,
+            kClockMode: 0, kClockFont: 1, kClockPos: 2, kClock24h: false,
         ])
     }
 
@@ -137,6 +153,23 @@ final class AuroraPreferences {
     var performanceIndex: Int {
         get { clampInt(defaults.integer(forKey: kPerformance), 0, AuroraPerformance.all.count - 1) }
         set { defaults.set(newValue, forKey: kPerformance) }
+    }
+
+    var clockModeIndex: Int {
+        get { clampInt(defaults.integer(forKey: kClockMode), 0, AuroraClock.modes.count - 1) }
+        set { defaults.set(newValue, forKey: kClockMode) }
+    }
+    var clockFontIndex: Int {
+        get { clampInt(defaults.integer(forKey: kClockFont), 0, AuroraClock.fonts.count - 1) }
+        set { defaults.set(newValue, forKey: kClockFont) }
+    }
+    var clockPositionIndex: Int {
+        get { clampInt(defaults.integer(forKey: kClockPos), 0, AuroraClock.positions.count - 1) }
+        set { defaults.set(newValue, forKey: kClockPos) }
+    }
+    var clock24h: Bool {
+        get { defaults.bool(forKey: kClock24h) }
+        set { defaults.set(newValue, forKey: kClock24h) }
     }
 
     var palette: AuroraPalette { AuroraPalette.all[paletteIndex] }
