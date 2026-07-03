@@ -244,3 +244,45 @@ describe("SceneManager performance modes", () => {
     expect(mgr.getTargetFps()).toBe(60);
   });
 });
+
+describe("SceneManager battery / power-save clamp", () => {
+  it("caps a fixed mode to scale 1.0 and 30 fps on battery, and releases on AC", () => {
+    const { mgr, restore } = makeDrivable();
+    mgr.setPerformanceMode("full"); // 2.0 / 60 on AC
+    expect(mgr.getQualityScale()).toBeCloseTo(2.0, 5);
+    expect(mgr.getTargetFps()).toBe(60);
+
+    mgr.setPowerSave(true);
+    expect(mgr.getPowerSave()).toBe(true);
+    expect(mgr.getQualityScale()).toBeCloseTo(1.0, 5); // clamped down
+    expect(mgr.getTargetFps()).toBe(30);
+
+    mgr.setPowerSave(false); // back on AC → full profile restored
+    expect(mgr.getQualityScale()).toBeCloseTo(2.0, 5);
+    expect(mgr.getTargetFps()).toBe(60);
+    restore();
+  });
+
+  it("does not raise a mode already lighter than the clamp", () => {
+    const { mgr, restore } = makeDrivable();
+    mgr.setPerformanceMode("power"); // 1.0 / 30 already
+    mgr.setPowerSave(true);
+    expect(mgr.getQualityScale()).toBeCloseTo(1.0, 5);
+    expect(mgr.getTargetFps()).toBe(30);
+    restore();
+  });
+
+  it("pins Auto to 30 fps on battery and never probes back to 60", () => {
+    const { mgr, tick, restore } = makeDrivable();
+    mgr.setPerformanceMode("auto");
+    mgr.setPowerSave(true);
+    expect(mgr.getTargetFps()).toBe(30); // seeded at the cap
+    expect(mgr.getQualityScale()).toBeLessThanOrEqual(1.0 + 1e-6);
+
+    mgr.start();
+    for (let i = 0; i < 1200; i++) tick(REFRESH); // fast frames would normally climb to 60
+    restore();
+    expect(mgr.getTargetFps()).toBe(30); // stayed pinned
+    expect(mgr.getQualityScale()).toBeLessThanOrEqual(1.0 + 1e-6);
+  });
+});

@@ -1,4 +1,5 @@
 import AppKit
+import IOKit.ps
 import Metal
 import QuartzCore
 import ScreenSaver
@@ -57,6 +58,18 @@ final class AuroraView: ScreenSaverView {
     // Lower bound on Auto's render scale — below ~native/2 the upscale gets soft.
     private let minAdaptiveScale: CGFloat = 1.0
 
+    // MARK: Battery / low-power clamp.
+    // A screensaver runs for hours unattended — precisely when nobody is watching
+    // the battery — so on battery power (or in macOS Low Power Mode) we cap the
+    // effective profile to at most `powerSaveMaxScale` render scale and 30 fps, on
+    // top of whatever mode the user picked. Released the moment AC returns. This
+    // is the single biggest laptop-battery lever the saver has.
+    private var powerSaveActive = false
+    private let powerSaveMaxScale: CGFloat = 1.0
+    private let powerSaveFrameInterval: TimeInterval = 1.0 / 30.0
+    // Run-loop source for IOKit power-source change notifications (AC ⇄ battery).
+    private var powerSource: CFRunLoopSource?
+
     override init?(frame: NSRect, isPreview: Bool) {
         renderer = AuroraRenderer(pixelFormat: .bgra8Unorm)
         super.init(frame: frame, isPreview: isPreview)
@@ -87,6 +100,61 @@ final class AuroraView: ScreenSaverView {
             renderer.apply(preferences: preferences)
         }
         configureClockLayers()
+        registerPowerObservers()
+        updatePowerState() // seed powerSaveActive before the first frame
+        updateLayerGeometry()
+    }
+
+    deinit {
+        if let src = powerSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes)
+        }
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    // MARK: - Battery / low-power detection
+
+    /// Subscribe to the two events that flip the power-save clamp: an IOKit
+    /// power-source change (AC ⇄ battery) and macOS Low Power Mode toggling. Both
+    /// funnel into `updatePowerState`, so the clamp is event-driven — no polling.
+    private func registerPowerObservers() {
+        let ctx = Unmanaged.passUnretained(self).toOpaque()
+        if let src = IOPSNotificationCreateRunLoopSource({ context in
+            guard let context else { return }
+            Unmanaged<AuroraView>.fromOpaque(context).takeUnretainedValue().updatePowerState()
+        }, ctx)?.takeRetainedValue() {
+            CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
+            powerSource = src
+        }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(powerStateNotification),
+            name: NSNotification.Name.NSProcessInfoPowerStateDidChange,
+            object: nil
+        )
+    }
+
+    @objc private func powerStateNotification() { updatePowerState() }
+
+    /// True when the machine is currently drawing from its battery (as opposed to
+    /// AC). Reads the live IOKit power-source snapshot; defaults to false (AC) on
+    /// desktops or if the snapshot is unavailable.
+    private func currentlyOnBattery() -> Bool {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue() else { return false }
+        let type = IOPSGetProvidingPowerSourceType(blob).takeRetainedValue() as String
+        return type == (kIOPSBatteryPowerValue as String)
+    }
+
+    /// Recompute the power-save clamp from battery + Low Power Mode and, if it
+    /// changed, reseed the adaptive controller and re-apply cadence + geometry so
+    /// the new profile takes effect on the very next frame.
+    private func updatePowerState() {
+        let save = currentlyOnBattery() || ProcessInfo.processInfo.isLowPowerModeEnabled
+        if save == powerSaveActive { return }
+        powerSaveActive = save
+        resetAdaptiveState()
+        if save { adaptiveAt60 = false } // pin the GPU-time budget to the 30 fps cap
+        animationTimeInterval = effectiveFrameInterval()
         updateLayerGeometry()
     }
 
@@ -242,16 +310,18 @@ final class AuroraView: ScreenSaverView {
     /// cap. Never exceeds the true backing scale (we don't supersample).
     private func effectiveRenderScale(backing: CGFloat) -> CGFloat {
         let perf = preferences.performance
-        let base = perf.isAuto ? adaptiveScale : perf.maxScale
+        var base = perf.isAuto ? adaptiveScale : perf.maxScale
+        if powerSaveActive { base = min(base, powerSaveMaxScale) } // battery clamp
         return min(base, backing)
     }
 
     /// The frame interval to use. Auto toggles between 60 and 30 fps as a last
     /// resort once resolution is already at the floor; fixed modes use their own.
+    /// On battery / Low Power Mode the result is floored to 30 fps regardless.
     private func effectiveFrameInterval() -> TimeInterval {
         let perf = preferences.performance
-        if perf.isAuto { return adaptiveAt60 ? 1.0 / 60.0 : 1.0 / 30.0 }
-        return perf.frameInterval
+        let base = perf.isAuto ? (adaptiveAt60 ? 1.0 / 60.0 : 1.0 / 30.0) : perf.frameInterval
+        return powerSaveActive ? max(base, powerSaveFrameInterval) : base
     }
 
     /// Re-seed Auto's adaptive state so it converges fresh each run. Starts a
@@ -346,8 +416,11 @@ final class AuroraView: ScreenSaverView {
     override func startAnimation() {
         super.startAnimation()
         // Pick up any changes made in the Options sheet since last run, and let
-        // Auto reconverge from a clean slate against the current display/GPU.
+        // Auto reconverge from a clean slate against the current display/GPU and
+        // the live power source.
+        powerSaveActive = currentlyOnBattery() || ProcessInfo.processInfo.isLowPowerModeEnabled
         resetAdaptiveState()
+        if powerSaveActive { adaptiveAt60 = false } // pin the GPU-time budget to 30 fps
         animationTimeInterval = effectiveFrameInterval()
         renderer?.apply(preferences: preferences)
         updateLayerGeometry()
@@ -403,6 +476,7 @@ final class AuroraView: ScreenSaverView {
     func reloadFromPreferences() {
         renderer?.apply(preferences: preferences)
         resetAdaptiveState() // a mode switch reseeds Auto's convergence
+        if powerSaveActive { adaptiveAt60 = false } // keep the 30 fps cap on battery
         animationTimeInterval = effectiveFrameInterval()
         updateLayerGeometry()
         updateClockOverlay(force: true) // apply clock setting changes live

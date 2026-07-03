@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { SceneManager } from "./engine/SceneManager";
 import { defaultsFor, type ParameterValue, type Parameter, type Scene } from "./engine/types";
 import { registerAllScenes } from "./scenes";
+import { watchPowerSource } from "./power/powerSource";
 import { SettingsPanel } from "./ui/SettingsPanel";
 import { ClockOverlay } from "./ui/ClockOverlay";
 import {
@@ -226,7 +227,12 @@ function App() {
     if (urlTheme) mgr.setParameter("theme", urlTheme);
     mgr.start();
 
+    // Clamp to a low-power profile whenever the machine is on battery, releasing
+    // it on AC. Fires once with the initial state, then on every transition.
+    const stopPowerWatch = watchPowerSource((onBattery) => mgr.setPowerSave(onBattery));
+
     return () => {
+      stopPowerWatch();
       mgr.dispose();
       managerRef.current = null;
     };

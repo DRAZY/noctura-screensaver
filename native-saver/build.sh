@@ -18,7 +18,7 @@ SAVER="$BUILD/Noctura.saver"
 SOURCES=("$DIR"/Sources/*.swift)
 TARGET="arm64-apple-macos13.0"
 
-FRAMEWORKS=(-framework ScreenSaver -framework AppKit -framework Metal -framework MetalKit -framework QuartzCore)
+FRAMEWORKS=(-framework ScreenSaver -framework AppKit -framework Metal -framework MetalKit -framework QuartzCore -framework IOKit)
 
 echo "==> Cleaning $BUILD"
 rm -rf "$BUILD"

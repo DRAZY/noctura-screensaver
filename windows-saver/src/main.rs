@@ -28,6 +28,7 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
 use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -41,6 +42,14 @@ static MOUSE_BASE: AtomicI64 = AtomicI64::new(i64::MIN);
 const MAX_EDGE: u32 = 5120;
 /// Pixels of cursor travel before we treat it as "user is back" and exit.
 const MOUSE_EXIT_THRESHOLD: i32 = 12;
+/// On battery we clamp the render scale to at most this fraction of the window
+/// and the frame rate to `POWER_SAVE_MAX_FPS`, on top of the user's chosen mode —
+/// a screensaver must not drain a laptop. Windows' render scale is
+/// window-relative (1.0 = native), so unlike the DPR-relative web/macOS engines a
+/// cap of 1.0 wouldn't bite; 0.75 meaningfully cuts the fragment count while
+/// staying crisp under upscale.
+const POWER_SAVE_MAX_SCALE: f32 = 0.75;
+const POWER_SAVE_MAX_FPS: f32 = 30.0;
 
 enum Mode {
     Saver,
@@ -191,6 +200,48 @@ fn backbuffer_size(win_w: i32, win_h: i32, scale: f32) -> (u32, u32) {
     (w.max(1), h.max(1))
 }
 
+/// Whether the machine is currently running on battery. `ACLineStatus` is 0 when
+/// offline (battery), 1 when online (AC), 255 unknown — only a definite 0 counts
+/// as battery, so desktops and unknown states keep full quality.
+fn on_battery() -> bool {
+    unsafe {
+        let mut status = SYSTEM_POWER_STATUS::default();
+        if GetSystemPowerStatus(&mut status).is_ok() {
+            status.ACLineStatus == 0
+        } else {
+            false
+        }
+    }
+}
+
+/// Fold the battery clamp into a base `(scale, frame_secs)`: on battery the scale
+/// is capped to `POWER_SAVE_MAX_SCALE` and the frame interval floored to 30 fps;
+/// on AC both pass through untouched.
+fn effective_profile(base_scale: f32, base_frame: f32, on_batt: bool) -> (f32, Duration) {
+    if on_batt {
+        (
+            base_scale.min(POWER_SAVE_MAX_SCALE),
+            Duration::from_secs_f32(base_frame.max(1.0 / POWER_SAVE_MAX_FPS)),
+        )
+    } else {
+        (base_scale, Duration::from_secs_f32(base_frame))
+    }
+}
+
+/// (Re)build one render surface per screensaver window at the given render scale.
+/// Used both at startup and when the power source flips mid-run and the scale
+/// changes (old surfaces drop, new ones are created against the same HWNDs).
+fn build_surfaces(gfx: &Gfx, wins: &[(HWND, i32, i32)], scale: f32) -> Vec<Surface> {
+    let mut surfaces = Vec::with_capacity(wins.len());
+    for &(hwnd, w, h) in wins {
+        let (bw, bh) = backbuffer_size(w, h, scale);
+        if let Ok(surf) = gfx.create_surface(hwnd, bw, bh) {
+            surfaces.push(surf);
+        }
+    }
+    surfaces
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_MOUSEMOVE if !IS_PREVIEW.load(Ordering::Relaxed) => {
@@ -256,8 +307,12 @@ fn register_class(class: PCWSTR) {
 fn run_saver() -> windows::core::Result<()> {
     let settings = Settings::load();
     let perf = settings.perf();
-    let scale = if perf.is_auto { 1.0 } else { perf.max_scale };
-    let target_frame = Duration::from_secs_f32(perf.frame_secs);
+    let base_scale = if perf.is_auto { 1.0 } else { perf.max_scale };
+    let base_frame = perf.frame_secs;
+    // Fold in the battery clamp up front so a saver that starts while unplugged
+    // is already light; the loop re-checks and adjusts live if power flips.
+    let mut on_batt = on_battery();
+    let (mut scale, mut target_frame) = effective_profile(base_scale, base_frame, on_batt);
 
     let class = w!("NocturaSaverWindow");
     register_class(class);
@@ -291,8 +346,9 @@ fn run_saver() -> windows::core::Result<()> {
             return Err(e);
         }
     };
-    let mut surfaces: Vec<Surface> = Vec::new();
-
+    // Handles + pixel sizes of every screensaver window, kept so surfaces can be
+    // rebuilt at a new render scale if the power source flips mid-run.
+    let mut windows_hw: Vec<(HWND, i32, i32)> = Vec::new();
     let mut first_hwnd: Option<HWND> = None;
     unsafe {
         let hinstance = GetModuleHandleW(None).unwrap_or_default();
@@ -315,10 +371,7 @@ fn run_saver() -> windows::core::Result<()> {
             if first_hwnd.is_none() {
                 first_hwnd = Some(hwnd);
             }
-            let (bw, bh) = backbuffer_size(w, h, scale);
-            if let Ok(surf) = gfx.create_surface(hwnd, bw, bh) {
-                surfaces.push(surf);
-            }
+            windows_hw.push((hwnd, w, h));
             let _ = SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,
@@ -330,6 +383,7 @@ fn run_saver() -> windows::core::Result<()> {
             );
         }
     }
+    let mut surfaces = build_surfaces(&gfx, &windows_hw, scale);
 
     // Bail before touching the cursor so a failed init can't leave it hidden.
     log::line(&format!("saver: {} surface(s) created", surfaces.len()));
@@ -350,6 +404,7 @@ fn run_saver() -> windows::core::Result<()> {
 
     let start = Instant::now();
     let mut last = Instant::now();
+    let mut last_power = Instant::now();
     let mut msg = MSG::default();
     'outer: loop {
         unsafe {
@@ -363,6 +418,26 @@ fn run_saver() -> windows::core::Result<()> {
         }
         if QUIT.load(Ordering::Relaxed) {
             break;
+        }
+        // Re-check the power source a couple of times a second (cheap syscall).
+        // A flip adjusts frame pacing immediately; a scale change also rebuilds
+        // the surfaces so resolution tracks power without restarting the saver.
+        if last_power.elapsed() >= Duration::from_secs(2) {
+            last_power = Instant::now();
+            let ob = on_battery();
+            if ob != on_batt {
+                on_batt = ob;
+                let (ns, nf) = effective_profile(base_scale, base_frame, ob);
+                target_frame = nf;
+                if (ns - scale).abs() > f32::EPSILON {
+                    scale = ns;
+                    surfaces = build_surfaces(&gfx, &windows_hw, scale);
+                }
+                log::line(&format!(
+                    "power change: on_battery={ob} scale={scale} fps={:.0}",
+                    1.0 / target_frame.as_secs_f32()
+                ));
+            }
         }
         let t = start.elapsed().as_secs_f32();
         let (ctime, cdate) = clock_strings(&settings);

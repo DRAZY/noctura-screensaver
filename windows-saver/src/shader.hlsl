@@ -676,6 +676,66 @@ float3 sceneFractal(float2 uv0, float aspect) {
     return col * vig;
 }
 
+// ---- Scene 16: Drift -------------------------------------------------------
+// Homage to the macOS "Drift" screensaver: thousands of short dashes combed along
+// a slow flow field via Line Integral Convolution, over big soft regions of
+// palette color. Density → strand fineness, size → swirl scale, intensity → glow.
+// Faithful port of the WebGL / Metal Drift scene (colors from the palette).
+float2 driftFlow(float2 x) {
+    x *= 0.62; // low frequency → big lazy vortices (fewer critical points)
+    float e = 0.012;
+    float n0 = snoise(x);
+    float nx = snoise(x + float2(e, 0.0)) - n0;
+    float ny = snoise(x + float2(0.0, e)) - n0;
+    float2 tang = float2(-ny, nx);
+    tang = tang / (length(tang) + 1e-4);
+    tang += float2(0.5, 0.18) * 0.32; // laminar bias dissolves singularities
+    return normalize(tang);
+}
+float driftSubstance(float2 x, float strands) {
+    return smoothstep(-0.25, 0.65, snoise(x * strands * 0.5));
+}
+float3 sceneDrift(float2 uv, float aspect) {
+    float2 pc = float2((uv.x - 0.5) * aspect, uv.y - 0.5);
+    float t = uTime * uSpeed;
+    float scale = 2.2 * clamp(uSize, 0.4, 2.2);
+    float strands = lerp(20.0, 40.0, clamp(uDensity, 0.0, 1.0));
+    float glow = 0.9 + uIntensity;
+    float2 p = pc * scale;
+
+    float2 pw = p + 0.4 * float2(
+        snoise(p * 0.4 + float2(0.0, t * 0.06)),
+        snoise(p * 0.4 + float2(5.0, -t * 0.05)));
+    float2 drift = driftFlow(pw) * (t * 0.12);
+
+    float stepLen = 0.035;
+    float acc = 0.0, wsum = 0.0;
+    float2 pos = pw;
+    [loop] for (int i = 0; i < 9; i++) {
+        float w = 1.0 - float(i) / 9.0;
+        acc += driftSubstance(pos + drift, strands) * w; wsum += w;
+        pos += driftFlow(pos) * stepLen;
+    }
+    pos = pw;
+    [loop] for (int i = 0; i < 9; i++) {
+        pos -= driftFlow(pos) * stepLen;
+        float w = 1.0 - float(i) / 9.0;
+        acc += driftSubstance(pos + drift, strands) * w; wsum += w;
+    }
+    float streak = smoothstep(0.22, 0.62, acc / wsum);
+    float cover = snoise(p * 0.45 + float2(9.0, -t * 0.03));
+    streak *= smoothstep(-0.7, 0.35, cover);
+
+    float creg = snoise(p * 0.32 + 3.0) * 0.5 + 0.5;
+    float3 col = ncCyc(creg + 0.03 * t);
+    float3 outc = float3(0.016, 0.012, 0.039) + col * streak * glow;
+    float vig = 1.0 - 0.28 * dot(uv - 0.5, uv - 0.5);
+    outc *= vig;
+    outc = outc / (outc + 0.7);
+    outc = pow(outc, float3(0.82, 0.82, 0.82));
+    return outc;
+}
+
 float4 PSMain(VSOut inp) : SV_Target {
     float aspect = uResolution.x / max(uResolution.y, 1.0);
     int s = int(uScene + 0.5);
@@ -696,6 +756,7 @@ float4 PSMain(VSOut inp) : SV_Target {
     else if (s == 13) col = sceneChrome(inp.uv, aspect);
     else if (s == 14) col = sceneNebula(inp.uv, aspect);
     else if (s == 15) col = sceneFractal(inp.uv, aspect);
+    else if (s == 16) col = sceneDrift(inp.uv, aspect);
     else             col = sceneAurora(inp.uv, aspect);
     col += ditherRGB(inp.pos.xy);
     return float4(col, 1.0);

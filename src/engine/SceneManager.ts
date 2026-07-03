@@ -38,6 +38,17 @@ const PERF_PROFILE: Record<PerformanceMode, { scale: number; fps: number }> = {
 const AUTO_MIN_SCALE = 1.0; // Auto won't drop resolution below this before cutting fps.
 
 /**
+ * Hard battery / low-power clamp. A screensaver is the one thing guaranteed to
+ * run for hours unattended — exactly when the user isn't watching the battery —
+ * so on battery power we cap the effective profile to at most this render scale
+ * and this frame rate, on top of whatever mode the user picked. On this
+ * (DPR-relative) engine a scale of 1.0 is a good non-supersampled floor, down
+ * from the 2.0 Retina ceiling. The cap is released the instant AC power returns.
+ */
+const POWER_SAVE_MAX_SCALE = 1.0;
+const POWER_SAVE_MAX_FPS = 30;
+
+/**
  * Largest drawing-buffer edge we allow. WebKit/WKWebView (the macOS Tauri
  * webview) composites a WebGL canvas as a single GPU surface only up to roughly
  * this size; beyond it the surface is split into tiles that refresh slightly out
@@ -103,6 +114,9 @@ export class SceneManager {
 
   // Performance / adaptive quality.
   private performanceMode: PerformanceMode = "auto";
+  // True while the machine is on battery (or an OS low-power mode). Folds a hard
+  // ceiling into every effective scale/frame-rate computation; see setPowerSave.
+  private powerSave = false;
   // Current ceiling on the effective pixel ratio (set by the mode; in Auto this
   // is the live adaptive value). Folded into effectivePixelRatio().
   private qualityCap = PERF_PROFILE.auto.scale;
@@ -228,18 +242,20 @@ export class SceneManager {
     this.performanceMode = mode;
     const profile = PERF_PROFILE[mode];
     if (mode === "auto") {
-      // Re-seed Auto so it converges fresh against the current scene/GPU.
-      this.autoScale = Math.min(1.5, profile.scale);
-      this.autoAt60 = true;
+      // Re-seed Auto so it converges fresh against the current scene/GPU. The
+      // ceiling folds in the battery clamp, and on battery we pin the cadence to
+      // 30 fps up front (Auto then only adapts resolution within the cap).
+      this.autoScale = Math.min(1.5, this.autoCeiling());
+      this.autoAt60 = !this.powerSave;
       this.smoothedFrameMs = 0;
       this.framesSinceAdapt = 0;
       this.slowStreak = 0;
       this.stableStreak = 0;
       this.qualityCap = this.autoScale;
-      this.targetFrameMs = 1000 / 60;
+      this.targetFrameMs = this.autoAt60 ? 1000 / 60 : 1000 / 30;
     } else {
-      this.qualityCap = profile.scale;
-      this.targetFrameMs = 1000 / profile.fps;
+      this.qualityCap = this.clampScale(profile.scale);
+      this.targetFrameMs = this.clampFrameMs(1000 / profile.fps);
     }
     this.frameAccumMs = 0;
     this.applyPixelRatio();
@@ -247,6 +263,39 @@ export class SceneManager {
 
   getPerformanceMode(): PerformanceMode {
     return this.performanceMode;
+  }
+
+  /**
+   * Report the current power source. On battery (or an OS low-power mode) the
+   * effective profile is hard-capped to {@link POWER_SAVE_MAX_SCALE} /
+   * {@link POWER_SAVE_MAX_FPS} on top of whatever mode the user chose; on AC the
+   * cap is released. Re-seeds the active mode so the change takes effect at once
+   * (and Auto reconverges against the new ceiling). Idempotent.
+   */
+  setPowerSave(active: boolean): void {
+    if (active === this.powerSave) return;
+    this.powerSave = active;
+    this.setPerformanceMode(this.performanceMode);
+  }
+
+  /** Whether the battery/low-power clamp is currently in effect. Diagnostics/tests. */
+  getPowerSave(): boolean {
+    return this.powerSave;
+  }
+
+  /** Render-scale ceiling Auto may climb to, folding in the battery clamp. */
+  private autoCeiling(): number {
+    return this.clampScale(PERF_PROFILE.auto.scale);
+  }
+
+  /** Cap a render scale by the battery clamp (no-op on AC). */
+  private clampScale(scale: number): number {
+    return this.powerSave ? Math.min(scale, POWER_SAVE_MAX_SCALE) : scale;
+  }
+
+  /** Floor a target frame interval by the battery clamp (no-op on AC). */
+  private clampFrameMs(ms: number): number {
+    return this.powerSave ? Math.max(ms, 1000 / POWER_SAVE_MAX_FPS) : ms;
   }
 
   /** Current effective render-scale ceiling (≈1.0–2.0). Diagnostics / HUD / tests. */
@@ -438,8 +487,9 @@ export class SceneManager {
   }
 
   private stepAutoUp(): void {
-    const ceiling = PERF_PROFILE.auto.scale;
-    if (!this.autoAt60) {
+    const ceiling = this.autoCeiling();
+    // On battery the cadence stays pinned at 30 fps — never probe back to 60.
+    if (!this.autoAt60 && !this.powerSave) {
       this.autoAt60 = true;
       this.targetFrameMs = 1000 / 60;
     } else if (this.autoScale < ceiling - 0.001) {

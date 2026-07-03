@@ -3,6 +3,7 @@ import { AmbientGradient } from "./AmbientGradient";
 import { AuroraRibbons } from "./AuroraRibbons";
 import { BlackHole } from "./BlackHole";
 import { Caustics } from "./Caustics";
+import { Drift } from "./Drift";
 import { Fireflies } from "./Fireflies";
 import { FlowingParticles } from "./FlowingParticles";
 import { FractalBloom } from "./FractalBloom";
@@ -40,4 +41,6 @@ export function registerAllScenes(manager: SceneManager): void {
   manager.register(new LiquidChrome());
   manager.register(new Nebula());
   manager.register(new FractalBloom());
+  // Index 16 — appended to keep saved indices and the native dispatch order stable.
+  manager.register(new Drift());
 }
