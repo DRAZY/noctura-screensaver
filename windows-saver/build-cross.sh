@@ -13,8 +13,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Output lives under windows-saver/ — NOT the repo-root ../dist, which the Tauri
+# app build wipes (`vite build` empties dist/). Putting it there caused release
+# zips to silently ship stale .scr binaries when a DMG build ran afterward.
 export XWIN_ACCEPT_LICENSE=1
-OUT="../dist/windows"
+OUT="dist/windows"
 mkdir -p "$OUT"
 
 for triple in x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do

@@ -51,7 +51,7 @@ as macOS. A hard 5120 px longest-edge backstop protects 6K/8K/spanned displays.
 ```bash
 cargo install --locked cargo-xwin
 rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
-./build-cross.sh        # → ../dist/windows/Noctura-{x64,arm64}.{scr,exe}
+./build-cross.sh        # → windows-saver/dist/windows/Noctura-{x64,arm64}.{scr,exe}
 ```
 
 `cargo-xwin` downloads the MSVC CRT + Windows SDK import headers and links with
