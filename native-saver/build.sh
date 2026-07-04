@@ -61,14 +61,27 @@ swiftc -O -parse-as-library -target "$TARGET" -framework AppKit -framework Scree
     -o "$BUILD/verify-load" "$DIR/verify-load.swift"
 "$BUILD/verify-load" "$SAVER"
 
+# Kill the caching host + Settings so a reinstall actually loads the new bundle.
+# macOS's legacyScreenSaver keeps the old bundle in memory across a file replace,
+# which is the classic "I reinstalled but still see the old version" trap.
+kill_saver_hosts() {
+    osascript -e 'tell application "System Settings" to quit' 2>/dev/null || true
+    osascript -e 'tell application "System Preferences" to quit' 2>/dev/null || true
+    killall legacyScreenSaver 2>/dev/null || true
+    killall ScreenSaverEngine 2>/dev/null || true
+    sleep 1
+}
+
 if [[ "${1:-}" == "--install" ]]; then
     DEST="$HOME/Library/Screen Savers"
+    kill_saver_hosts
     mkdir -p "$DEST"
     rm -rf "$DEST/Noctura.saver"
     cp -R "$SAVER" "$DEST/Noctura.saver"
-    echo "==> Installed to $DEST/Noctura.saver"
+    echo "==> Installed to $DEST/Noctura.saver (stale host processes killed)"
 elif [[ "${1:-}" == "--uninstall" ]]; then
     DEST="$HOME/Library/Screen Savers/Noctura.saver"
+    kill_saver_hosts
     rm -rf "$DEST"
     defaults delete com.aurora.screensaver 2>/dev/null || true
     echo "==> Uninstalled $DEST (and cleared saved settings)"

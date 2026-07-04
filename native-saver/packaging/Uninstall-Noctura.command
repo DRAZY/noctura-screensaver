@@ -8,6 +8,14 @@ set -euo pipefail
 
 DEST="$HOME/Library/Screen Savers/Noctura.saver"
 
+# Stop anything still running the bundle first, so removal is clean and the host
+# doesn't keep an old copy alive in memory. Both relaunch on demand.
+osascript -e 'tell application "System Settings" to quit' 2>/dev/null || true
+osascript -e 'tell application "System Preferences" to quit' 2>/dev/null || true
+killall legacyScreenSaver 2>/dev/null || true
+killall ScreenSaverEngine 2>/dev/null || true
+sleep 1
+
 if [[ -d "$DEST" ]]; then
     rm -rf "$DEST"
     echo "Removed: $DEST"
