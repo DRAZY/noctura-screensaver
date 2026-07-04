@@ -56,8 +56,11 @@ final class AuroraView: ScreenSaverView {
     // dispatching a runaway fragment count even at "Full" — anything larger is
     // rendered at this width and upscaled to fill.
     private let maxRenderEdge: CGFloat = 5120
-    // Lower bound on Auto's render scale — below ~native/2 the upscale gets soft.
-    private let minAdaptiveScale: CGFloat = 1.0
+    // Lower bound on Auto's render scale. Low enough that even a heavy scene on a
+    // weak integrated GPU can reach frame budget by dropping resolution (the image
+    // gets soft, but the machine never bogs down — the correct trade for a
+    // background screensaver). The panic path below drives toward this fast.
+    private let minAdaptiveScale: CGFloat = 0.5
 
     // MARK: Battery / low-power clamp.
     // A screensaver runs for hours unattended — precisely when nobody is watching
@@ -334,12 +337,15 @@ final class AuroraView: ScreenSaverView {
         return powerSaveActive ? max(base, powerSaveFrameInterval) : base
     }
 
-    /// Re-seed Auto's adaptive state so it converges fresh each run. Starts a
-    /// touch below native and at 60 fps; the controller climbs or backs off from
-    /// there based on measured GPU time.
+    /// Re-seed Auto's adaptive state so it converges fresh each run. Start at a
+    /// SAFE-BUT-VISIBLE middle (≈quarter-native pixels), then climb toward native
+    /// when there's headroom. This is deliberately not the full-native start the
+    /// old controller used (which let a 605 ms/frame scene peg the GPU for the ~30
+    /// frames it took to react); the real safety is the fast panic path in
+    /// `adaptPerformanceIfNeeded`, which recovers from any overload in one frame.
     private func resetAdaptiveState() {
         let backing = window?.backingScaleFactor ?? 2.0
-        adaptiveScale = min(1.5, backing)
+        adaptiveScale = min(1.0, backing)
         adaptiveAt60 = true
         smoothedGPUTime = 0
         framesSinceAdapt = 0
@@ -358,13 +364,28 @@ final class AuroraView: ScreenSaverView {
 
         let gpu = renderer.lastGPUFrameTime
         if gpu <= 0 {
-            // No GPU timestamps: fall back to wall-clock overruns. Only ever
-            // *reduce* quality (can't detect spare headroom without a GPU clock).
-            if Double(dt) > budget * 1.5 { fallbackSlowFrames += 1 } else { fallbackSlowFrames = 0 }
-            if fallbackSlowFrames >= 12, framesSinceAdapt >= 12 {
+            // No GPU timestamps: drive off the wall-clock frame interval instead.
+            // Since we now START LOW, this path must also be able to CLIMB when
+            // frames are comfortably fast, or a timestamp-less GPU would be stuck
+            // soft forever. A very slow frame drops immediately (panic); sustained
+            // slow drops gently; sustained fast climbs.
+            if Double(dt) > budget * 2.5 {                 // panic: one very slow frame
                 stepAdaptiveDown(backing: backing)
                 fallbackSlowFrames = 0
                 framesSinceAdapt = 0
+            } else if Double(dt) > budget * 1.4 {
+                fallbackSlowFrames += 1
+                if fallbackSlowFrames >= 10 {
+                    stepAdaptiveDown(backing: backing)
+                    fallbackSlowFrames = 0
+                    framesSinceAdapt = 0
+                }
+            } else {
+                fallbackSlowFrames = 0
+                if Double(dt) < budget * 0.7, framesSinceAdapt >= 40 {
+                    stepAdaptiveUp(backing: backing)  // headroom → climb toward native
+                    framesSinceAdapt = 0
+                }
             }
             return
         }
@@ -372,8 +393,35 @@ final class AuroraView: ScreenSaverView {
         // Smooth so a single hitch doesn't yank the scale.
         smoothedGPUTime = smoothedGPUTime == 0 ? gpu : smoothedGPUTime * 0.9 + gpu * 0.1
 
-        // Only re-evaluate periodically so changes settle (and drawableSize isn't
-        // thrashed every frame).
+        // PANIC PATH: a badly over-budget frame is fixed IMMEDIATELY, not after the
+        // 30-frame hysteresis window. GPU cost scales with pixel count (≈ scale²),
+        // so we jump straight to the scale that would hit ~80% of budget in a
+        // single step, instead of nibbling 15% at a time (which left the old
+        // controller pegged for seconds recovering from a heavy scene). Uses the
+        // raw frame time, not the smoothed value, so it reacts on the first bad
+        // frame after startup.
+        if gpu > budget * 1.6 {
+            let ratio = (budget * 0.8) / gpu               // <1
+            let target = max(adaptiveScale * CGFloat(sqrt(ratio)), minAdaptiveScale)
+            if target < adaptiveScale - 0.01 {
+                adaptiveScale = target
+                smoothedGPUTime = 0
+                framesSinceAdapt = 0
+                updateLayerGeometry()
+                return
+            }
+            // Already at the resolution floor and still slow → shed frame rate.
+            if adaptiveAt60 {
+                adaptiveAt60 = false
+                applyFrameInterval()
+                smoothedGPUTime = 0
+                framesSinceAdapt = 0
+            }
+            return
+        }
+
+        // Only re-evaluate periodically so gentle changes settle (and drawableSize
+        // isn't thrashed every frame).
         guard framesSinceAdapt >= 30 else { return }
 
         if smoothedGPUTime > budget * 0.85 {

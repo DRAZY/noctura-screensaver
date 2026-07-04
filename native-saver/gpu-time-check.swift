@@ -93,8 +93,27 @@ struct GPUTimeCheck {
         guard anyNonzero else {
             fail("GPU timestamps all zero — Auto would use the frame-time fallback on this GPU")
         }
-        print(String(format: "gpu-time-check OK — timestamps reported; worst scene = %.3f ms (%.0f%% of 60fps budget at %dx%d)",
-                     worst * 1000, worst / frameBudget60 * 100, W, H))
+
+        // COST CEILING (regression gate). The adaptive controller keeps a scene
+        // smooth by dropping resolution (to ≈quarter native) and, last resort, to
+        // 30 fps — so at the floor a scene renders ~1/4 of these pixels. For that to
+        // still fit the 30 fps budget, full-res cost here must stay under ~130 ms.
+        // We fail the build past `maxMs` (default 180, generous headroom on this
+        // reference GPU) so a catastrophic scene — like the 605 ms/frame Flux Drift
+        // that once froze a machine — can NEVER ship again. Tune via env if a much
+        // slower CI GPU needs a higher ceiling.
+        let worstMs = worst * 1000
+        let maxMs = ProcessInfo.processInfo.environment["NOCTURA_MAX_SCENE_MS"].flatMap { Double($0) } ?? 180.0
+        let warnMs = 100.0
+        print(String(format: "gpu-time-check: worst scene = %.1f ms (%.0f%% of 60fps budget at %dx%d); ceiling = %.0f ms",
+                     worstMs, worst / frameBudget60 * 100, W, H, maxMs))
+        if worstMs > maxMs {
+            fail(String(format: "a scene costs %.1f ms/frame at %dx%d — over the %.0f ms ceiling. Even at the adaptive resolution floor this would bog down weaker GPUs. Make the scene cheaper.", worstMs, W, H, maxMs))
+        }
+        if worstMs > warnMs {
+            FileHandle.standardError.write(String(format: "gpu-time-check WARNING: worst scene %.1f ms is heavy (> %.0f ms); it will run at reduced resolution on most GPUs.\n", worstMs, warnMs).data(using: .utf8)!)
+        }
+        print("gpu-time-check OK — all scenes within the cost ceiling.")
         exit(0)
     }
 }

@@ -735,33 +735,38 @@ float snoise3(float3 v) {
     m = m * m;
     return 42.0 * dot(m * m, float4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
 }
+// Cheap flow stream-function: one octave of 2D simplex with a slow time drift —
+// ~1/5th the cost of the 3D-noise version; this scene samples it heavily.
 float driftPsi(float2 p, float t) {
-    return 1.00 * snoise3(float3(p * 0.9, t * 0.05))
-         + 0.55 * snoise3(float3(p * 2.4, t * 0.12));
+    float2 dr = float2(t * 0.06, -t * 0.045);
+    return snoise(p * 0.9 + dr);
 }
 float2 driftVel(float2 p, float t) {
-    const float e = 0.75;
-    float px1 = driftPsi(p + float2(e, 0.0), t), px0 = driftPsi(p - float2(e, 0.0), t);
-    float py1 = driftPsi(p + float2(0.0, e), t), py0 = driftPsi(p - float2(0.0, e), t);
-    return float2(py1 - py0, -(px1 - px0)) / (2.0 * e);
+    const float e = 0.9;
+    float c  = driftPsi(p, t);                    // forward diff: 3 taps, not 4
+    float dx = driftPsi(p + float2(e, 0.0), t) - c;
+    float dy = driftPsi(p + float2(0.0, e), t) - c;
+    // Curl → divergence-free, plus a small constant laminar bias that keeps flow
+    // moving where the gradient vanishes (kills radial "starburst" singularities).
+    return float2(dy, -dx) / e + float2(0.22, 0.08);
 }
 float3 sceneDrift(float2 uv0, float aspect) {
     float2 uv = float2((uv0.x - 0.5) * aspect, uv0.y - 0.5);
     float t = uTime * uSpeed;
     float flow = 2.0 * clamp(uSize, 0.4, 2.2);
-    float grid = lerp(36.0, 52.0, clamp(uDensity, 0.0, 1.0));
+    float grid = lerp(26.0, 40.0, clamp(uDensity, 0.0, 1.0));
     float glow = 1.0 + uIntensity;
-    const int KSTEPS = 4;
-    const int SEARCH = 3;
+    const int KSTEPS = 3;
+    const int SEARCH = 2;
     const float LINE_BEGIN_OFFSET = 0.4;
     const float LINE_VARIANCE = 0.55;
-    const float SPEED_GAIN = 2.0;
-    const float HALF_WIDTH = 0.18;
+    const float SPEED_GAIN = 2.6;
+    const float HALF_WIDTH = 0.20;
     const float HEAD_GLOW = 0.22;
 
     float cell = 1.0 / grid;
     float2 baseId = floor(uv / cell);
-    float lenCells = min(3.0, (float)SEARCH);
+    float lenCells = min(2.0, (float)SEARCH);
     float accum = 0.0;
     [loop] for (int j = -SEARCH; j <= SEARCH; j++) {
         [loop] for (int i = -SEARCH; i <= SEARCH; i++) {
@@ -773,7 +778,7 @@ float3 sceneDrift(float2 uv0, float aspect) {
             float rnd = driftHash(cellId);
             float variance = lerp(1.0 - LINE_VARIANCE, 1.0, rnd);
             float lineLen = lenCells * cell * boost * variance;
-            float halfW = HALF_WIDTH * cell * boost;
+            float halfW = max(HALF_WIDTH * cell * boost, 2.2 * fwidth(uv.y)); // floor to ~2px so strokes survive low-res panic
             if (lineLen < 1e-5) continue;
             if (dot(uv - bp, uv - bp) > (lineLen + halfW) * (lineLen + halfW)) continue;
             float ds = lineLen / float(KSTEPS);
@@ -792,7 +797,7 @@ float3 sceneDrift(float2 uv0, float aspect) {
                 vPrev = driftVel(pPrev * flow, t);
             }
             float fade = smoothstep(LINE_BEGIN_OFFSET, 1.0, bestS);
-            float aa = 1.5 / uResolution.y + 1e-5;
+            float aa = min(1.5 * fwidth(uv.y), halfW * 0.9) + 1e-5; // capped to halfW so thin strokes survive low res
             float edge = 1.0 - smoothstep(halfW - aa, halfW, best);
             float alpha = boost * fade * edge;
             if (alpha <= 0.0) continue;
@@ -801,7 +806,7 @@ float3 sceneDrift(float2 uv0, float aspect) {
         }
     }
 
-    float creg = 0.7 * snoise3(float3(uv * flow * 0.22, t * 0.05))
+    float creg = 0.7 * snoise(uv * flow * 0.22 + float2(t * 0.05, 0.0))
                + 0.55 * (uv.x + uv.y) + 0.04 * t;
     float3 tint = ncCyc(creg);
     float3 outc = float3(0.016, 0.012, 0.039) + tint * accum * glow;

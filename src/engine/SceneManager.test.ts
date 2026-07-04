@@ -206,32 +206,51 @@ describe("SceneManager performance modes", () => {
     expect(full.scene.renders).toBeGreaterThan(power.scene.renders * 1.5);
   });
 
-  it("Auto lowers quality under sustained slow frames, then drops to 30 fps at the floor", () => {
-    const { mgr, tick, restore } = makeDrivable();
+  it("Auto starts at a safe-but-visible middle scale and 60 fps", () => {
+    const { mgr, restore } = makeDrivable();
     mgr.setPerformanceMode("auto");
-    expect(mgr.getQualityScale()).toBeCloseTo(1.5, 5);
+    // Safe-by-default: starts at ≈quarter-native (not full), then climbs; the fast
+    // panic path is the real overload protection, not a super-low start.
+    expect(mgr.getQualityScale()).toBeCloseTo(1.0, 5);
     expect(mgr.getTargetFps()).toBe(60);
-    mgr.start();
-    // Frames arriving every 40 ms = badly GPU-bound for a 60 fps budget.
-    for (let i = 0; i < 400; i++) tick(40);
     restore();
-    expect(mgr.getQualityScale()).toBeLessThan(1.5);
-    expect(mgr.getQualityScale()).toBeCloseTo(1.0, 3); // hit the resolution floor
-    expect(mgr.getTargetFps()).toBe(30); // then fell back to 30 fps
   });
 
-  it("Auto climbs back toward full quality once frames are comfortably fast", () => {
+  it("Auto sheds frame rate to 30 fps when sustained-slow at the resolution floor", () => {
     const { mgr, tick, restore } = makeDrivable();
     mgr.setPerformanceMode("auto");
     mgr.start();
-    for (let i = 0; i < 200; i++) tick(40); // degrade first
-    const degraded = mgr.getQualityScale();
-    expect(degraded).toBeLessThan(1.5);
+    // Frames arriving every 40 ms = badly GPU-bound for a 60 fps budget. Already
+    // at the resolution floor, so the only lever left is frame rate.
+    for (let i = 0; i < 400; i++) tick(40);
+    restore();
+    expect(mgr.getQualityScale()).toBeCloseTo(0.5, 3); // stays at the floor
+    expect(mgr.getTargetFps()).toBe(30); // fell back to 30 fps
+  });
 
-    for (let i = 0; i < 1200; i++) tick(REFRESH); // then feed fast frames
+  it("Auto climbs toward native once frames are comfortably fast", () => {
+    const { mgr, tick, restore } = makeDrivable();
+    mgr.setPerformanceMode("auto");
+    mgr.start();
+    expect(mgr.getQualityScale()).toBeCloseTo(1.0, 5); // starts at the middle
+    for (let i = 0; i < 1200; i++) tick(REFRESH); // sustained fast frames → climb
     restore();
     expect(mgr.getTargetFps()).toBe(60);
-    expect(mgr.getQualityScale()).toBeGreaterThan(degraded);
+    expect(mgr.getQualityScale()).toBeGreaterThan(1.0); // climbed above the start
+  });
+
+  it("Auto panic-drops resolution fast on a badly over-budget frame", () => {
+    const { mgr, tick, restore } = makeDrivable();
+    mgr.setPerformanceMode("auto");
+    mgr.start();
+    // Starts at scale 1.0 — plenty to shed. A sudden run of very slow (60 ms)
+    // frames must drop scale quickly (panic), not nibble down over hundreds of
+    // frames as the old controller did (which left the GPU pegged for seconds).
+    const start = mgr.getQualityScale();
+    expect(start).toBeCloseTo(1.0, 5);
+    for (let i = 0; i < 6; i++) tick(60);
+    restore();
+    expect(mgr.getQualityScale()).toBeLessThan(start * 0.85); // dropped meaningfully, fast
   });
 
   it("does not adapt while a fixed mode is selected", () => {

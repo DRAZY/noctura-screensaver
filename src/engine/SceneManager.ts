@@ -35,7 +35,12 @@ const PERF_PROFILE: Record<PerformanceMode, { scale: number; fps: number }> = {
   balanced: { scale: 1.5, fps: 60 },
   power: { scale: 1.0, fps: 30 },
 };
-const AUTO_MIN_SCALE = 1.0; // Auto won't drop resolution below this before cutting fps.
+// Auto's render-scale floor. Low enough that a heavy scene on a weak GPU can hit
+// frame budget by dropping resolution (soft but smooth — the right trade for a
+// background screensaver). Auto starts AT this floor and climbs up when there's
+// headroom, so the first frames are never catastrophic; the panic path drives
+// back down fast if a frame is badly over budget.
+const AUTO_MIN_SCALE = 0.5;
 
 /**
  * Hard battery / low-power clamp. A screensaver is the one thing guaranteed to
@@ -217,9 +222,9 @@ export class SceneManager {
     pr = Math.min(pr, this.qualityCap);
     const longest = Math.max(width, height, 1);
     if (longest * pr > MAX_SURFACE_DIM) pr = MAX_SURFACE_DIM / longest;
-    // Never go below 1 CSS px per device px on normal displays; on very large
-    // ones we accept a slightly soft buffer to stay seam-free.
-    return Math.max(0.75, pr);
+    // Hard floor matches AUTO_MIN_SCALE so Auto's panic path can actually reach a
+    // low-enough resolution on a weak GPU to hold frame budget (soft but smooth).
+    return Math.max(AUTO_MIN_SCALE, pr);
   }
 
   /**
@@ -247,10 +252,11 @@ export class SceneManager {
     this.performanceMode = mode;
     const profile = PERF_PROFILE[mode];
     if (mode === "auto") {
-      // Re-seed Auto so it converges fresh against the current scene/GPU. The
-      // ceiling folds in the battery clamp, and on battery we pin the cadence to
-      // 30 fps up front (Auto then only adapts resolution within the cap).
-      this.autoScale = Math.min(1.5, this.autoCeiling());
+      // Re-seed Auto at a SAFE-BUT-VISIBLE middle (not full native), then climb.
+      // The old controller started near native and took ~30 slow frames to react,
+      // which let a 605 ms/frame scene peg the GPU; the real safety is the fast
+      // panic path below (one-frame recovery). Ceiling folds in the battery clamp.
+      this.autoScale = Math.min(1.0, this.autoCeiling());
       this.autoAt60 = !this.powerSave;
       this.smoothedFrameMs = 0;
       this.framesSinceAdapt = 0;
@@ -453,6 +459,22 @@ export class SceneManager {
     this.framesSinceAdapt += 1;
 
     const budget = this.targetFrameMs;
+
+    // PANIC PATH: a badly over-budget frame is corrected IMMEDIATELY, not after
+    // the multi-frame streak logic. The rAF interval is vsync-floored near the
+    // refresh period, so a value well above it means the GPU genuinely can't keep
+    // up; render cost scales ≈ with the pixel ratio squared, so we jump straight
+    // to the scale that would fit budget in one step rather than nibbling 15% at a
+    // time (which left the old controller pegged for seconds on a heavy scene).
+    if (frameMs > budget * 2.0 && this.autoScale > AUTO_MIN_SCALE + 0.001) {
+      const ratio = (budget * 0.85) / frameMs; // < 1
+      this.autoScale = Math.max(this.autoScale * Math.sqrt(ratio), AUTO_MIN_SCALE);
+      this.qualityCap = this.autoScale;
+      this.resetAdaptCounters();
+      this.applyPixelRatio();
+      return;
+    }
+
     if (this.smoothedFrameMs > budget * 1.25) {
       this.slowStreak += 1;
       this.stableStreak = 0;
@@ -470,8 +492,8 @@ export class SceneManager {
 
     if (this.slowStreak >= 12) {
       this.stepAutoDown();
-    } else if (this.stableStreak >= 150) {
-      this.stepAutoUp();
+    } else if (this.stableStreak >= 90) {
+      this.stepAutoUp(); // climb toward native when there's sustained headroom
     }
   }
 

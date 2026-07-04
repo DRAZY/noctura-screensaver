@@ -30,6 +30,15 @@ swiftc -O -target "$TARGET" -framework Metal \
     "$DIR/Sources/AuroraShader.swift" "$DIR/shader-check.swift"
 "$BUILD/shader-check"
 
+# GPU-cost gate: measure every scene's real per-frame GPU time and FAIL the build
+# if any scene is catastrophically expensive (the guard that would have caught the
+# 605 ms/frame Flux Drift before it ever shipped and froze a machine).
+echo "==> GPU-cost gate (per-scene frame time ceiling)"
+swiftc -O -target "$TARGET" -framework Metal \
+    -o "$BUILD/gpu-time-check" \
+    "$DIR/Sources/AuroraShader.swift" "$DIR/Sources/Preferences.swift" "$DIR/gpu-time-check.swift"
+"$BUILD/gpu-time-check"
+
 echo "==> [2/3] Compiling Swift sources into bundle executable"
 swiftc -O \
     -target "$TARGET" \

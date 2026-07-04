@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import type { Parameter, ParameterValue } from "../engine/types";
 import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
-import { DITHER, SIMPLEX_3D } from "../engine/shaders/noise.glsl";
+import { DITHER, SIMPLEX_2D } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
 
 /**
@@ -44,19 +44,20 @@ uniform vec3  uColorB;
 uniform vec3  uColorC;
 uniform vec3  uSky;      // near-black background
 
-${SIMPLEX_3D}
+${SIMPLEX_2D}
 ${DITHER}
 
-// Fixed tunables. Kept deliberately small: this scene's cost is
-// (2*SEARCH+1)^2 * KSTEPS * (noise evals) per pixel, so SEARCH/KSTEPS/octaves are
-// the GPU budget. These values keep it real-time on integrated GPUs; the earlier
-// SEARCH=6/KSTEPS=6/3-octave settings did ~26k noise evals/pixel and pegged GPUs.
-#define KSTEPS 4                    // streamline polyline segments (Euler)
-#define SEARCH 3                    // basepoint neighbourhood half-width (>= uLen)
+// Fixed tunables. This scene's cost is (2*SEARCH+1)^2 * KSTEPS * (noise evals) per
+// pixel — the dominant GPU budget — so SEARCH/KSTEPS and the noise cost are kept
+// small. The flow uses CHEAP 2D simplex (not 3D): the earlier 3D-noise,
+// SEARCH=3/KSTEPS=4 version measured 605 ms/frame at Retina and pegged GPUs; this
+// is ~9x lighter. The engine's adaptive controller bounds it further per-GPU.
+#define KSTEPS 3                    // streamline polyline segments (Euler)
+#define SEARCH 2                    // basepoint neighbourhood half-width (>= uLen)
 const float LINE_BEGIN_OFFSET = 0.4;
 const float LINE_VARIANCE = 0.55;
-const float SPEED_GAIN = 2.0;       // width_boost = clamp(GAIN * |v|, 0, 1)
-const float HALF_WIDTH = 0.18;      // stroke half-width in cells at full speed
+const float SPEED_GAIN = 2.6;       // width_boost = clamp(GAIN * |v|, 0, 1)
+const float HALF_WIDTH = 0.20;      // stroke half-width in cells at full speed
 const float HEAD_GLOW = 0.22;       // extra brightness at the leading tip
 
 // A->B->C->A palette cycle for the big colour zones.
@@ -73,20 +74,24 @@ float hash21(vec2 p) {
   return fract(p.x * p.y);
 }
 
-// 2-octave simplex stream function; its curl (below) is a divergence-free flow.
-// (2 octaves, not 3 — halving the noise cost of the hottest function in the scene.)
+// Cheap flow stream-function: one octave of 2D simplex whose sample point drifts
+// slowly with time (evolution without the cost of 3D noise) — the single biggest
+// cost lever in this scene, which samples it ~(2*SEARCH+1)^2 * KSTEPS times/pixel.
 float streamPsi(vec2 p, float t) {
-  return 1.00 * snoise3(vec3(p * 0.9, t * 0.05))
-       + 0.55 * snoise3(vec3(p * 2.4, t * 0.12));
+  vec2 dr = vec2(t * 0.06, -t * 0.045);
+  return snoise(p * 0.9 + dr);
 }
 
-// Flow velocity = curl of the stream function (finite differences). UN-normalized
-// so |v| is the local flow speed, which drives streak length + width + brightness.
+// Flow velocity = curl of the stream function (forward differences: 3 taps, not 4).
+// UN-normalized so |v| is the local flow speed, which drives streak length/width/
+// brightness. A small constant laminar bias keeps flow moving where the gradient
+// vanishes, killing the radial "starburst" singularities short streaks expose.
 vec2 velocityAt(vec2 p, float t) {
-  const float e = 0.75;
-  float px1 = streamPsi(p + vec2(e, 0.0), t), px0 = streamPsi(p - vec2(e, 0.0), t);
-  float py1 = streamPsi(p + vec2(0.0, e), t), py0 = streamPsi(p - vec2(0.0, e), t);
-  return vec2(py1 - py0, -(px1 - px0)) / (2.0 * e);
+  const float e = 0.9;
+  float c  = streamPsi(p, t);
+  float dx = streamPsi(p + vec2(e, 0.0), t) - c;
+  float dy = streamPsi(p + vec2(0.0, e), t) - c;
+  return vec2(dy, -dx) / e + vec2(0.22, 0.08);
 }
 
 // Total streak brightness at a pixel: gather the streamlines seeded at every
@@ -107,7 +112,11 @@ float streakField(vec2 uv, float t) {
       float rnd = hash21(cellId);
       float variance = mix(1.0 - LINE_VARIANCE, 1.0, rnd);
       float lineLen = lenCells * cell * boost * variance;
-      float halfW = HALF_WIDTH * cell * boost;
+      // Streak half-width, floored to ~2 screen pixels so strokes never shrink
+      // below visibility when the adaptive controller drops to a low resolution on
+      // a weak GPU (without this, the thin world-space strokes vanish and the
+      // scene reads as black at low res).
+      float halfW = max(HALF_WIDTH * cell * boost, 2.2 * fwidth(uv.y));
       if (lineLen < 1e-5) continue;
       if (dot(uv - bp, uv - bp) > (lineLen + halfW) * (lineLen + halfW)) continue; // AABB reject
 
@@ -127,7 +136,14 @@ float streakField(vec2 uv, float t) {
         vPrev = velocityAt(pPrev * uFlow, t);          // one velocity eval per step
       }
       float fade = smoothstep(LINE_BEGIN_OFFSET, 1.0, bestS); // tail fades out
-      float aa = 1.5 / uResolution.y + 1e-5;           // fixed AA (NOT fwidth — grids at seams)
+      // Anti-alias width, clamped to never exceed the stroke's own half-width.
+      // Screen-space (1.5px via fwidth of the CONTINUOUS uv.y — no resolution
+      // uniform, and no per-cell seam spike) for crisp edges at high resolution;
+      // but capped at 0.9*halfW so that at LOW resolution — where the adaptive
+      // controller runs a heavy scene, and where a raw screen-space AA would grow
+      // wider than the thin strokes and wash them to black — the stroke centre
+      // still renders bright. This is what keeps Flux Drift visible at every scale.
+      float aa = min(1.5 * fwidth(uv.y), halfW * 0.9) + 1e-5;
       float edge = 1.0 - smoothstep(halfW - aa, halfW, best);
       float alpha = boost * fade * edge;
       if (alpha <= 0.0) continue;
@@ -149,7 +165,7 @@ void main() {
   // velocity wash). A low-frequency noise gives the organic zone shapes; a gentle
   // diagonal gradient sweeps the whole frame through all three palette stops so
   // every colour is present (not just a narrow band). One cheap lookup.
-  float creg = 0.7 * snoise3(vec3(uv * uFlow * 0.22, t * 0.05))
+  float creg = 0.7 * snoise(uv * uFlow * 0.22 + vec2(t * 0.05, 0.0))
              + 0.55 * (uv.x + uv.y) + 0.04 * t;
   vec3 tint = ncCyc(creg);
 
@@ -164,8 +180,8 @@ void main() {
 
 const DEFAULT_THEME = "nebula";
 const DEFAULT_FLOW = 2.0;   // swirl scale
-const DEFAULT_GRID = 40;    // grid density (cells across the field)
-const DEFAULT_LEN = 3.0;    // streamline length in cells (must be <= SEARCH=3)
+const DEFAULT_GRID = 33;    // grid density (cells across the field)
+const DEFAULT_LEN = 2.0;    // streamline length in cells (must be <= SEARCH=2)
 const DEFAULT_GLOW = 1.6;
 // Drift's signature is multi-hue (magenta / green / blue), so the default color
 // stops are a vibrant triad rather than a single-hue palette. Picking a Theme in
@@ -182,8 +198,8 @@ export class Drift extends FullscreenScene {
   readonly parameters: ReadonlyArray<Parameter> = [
     { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 1.5, step: 0.01, default: 0.3 },
     { kind: "range", id: "scale", label: "Swirl Scale", min: 1.2, max: 4.0, step: 0.1, default: DEFAULT_FLOW },
-    { kind: "range", id: "density", label: "Density", min: 30, max: 56, step: 1, default: DEFAULT_GRID },
-    { kind: "range", id: "dash", label: "Stroke Length", min: 1.5, max: 3.0, step: 0.25, default: DEFAULT_LEN },
+    { kind: "range", id: "density", label: "Density", min: 24, max: 46, step: 1, default: DEFAULT_GRID },
+    { kind: "range", id: "dash", label: "Stroke Length", min: 1.0, max: 2.0, step: 0.1, default: DEFAULT_LEN },
     { kind: "range", id: "glow", label: "Glow", min: 0.4, max: 2.4, step: 0.05, default: DEFAULT_GLOW },
     { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: DEFAULT_THEME },
     { kind: "color", id: "colorA", label: "Color A", default: DRIFT_A },

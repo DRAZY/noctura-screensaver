@@ -185,15 +185,29 @@ fn build_uniforms(s: &Settings, time: f32, res: [f32; 2]) -> Uniforms {
     }
 }
 
-/// Convert a window pixel size to a back-buffer size under the active
-/// performance scale, clamped to the MAX_EDGE backstop.
-fn backbuffer_size(win_w: i32, win_h: i32, scale: f32) -> (u32, u32) {
+/// Largest back-buffer edge allowed for a given scene. Most scenes use the global
+/// MAX_EDGE backstop, but the streamline-gather Flux Drift (scene 16) is an order
+/// of magnitude heavier per pixel than any other scene, and the Windows saver has
+/// no adaptive resolution controller (unlike macOS/web). To keep it from pegging a
+/// GPU it renders at a hard-capped resolution and upscales — soft but smooth. This
+/// is the Windows analogue of the macOS adaptive floor; a real per-frame governor
+/// is future work.
+fn scene_max_edge(scene: usize) -> u32 {
+    match scene {
+        16 => 1600, // Flux Drift — heavy; cap hard (no adaptive controller here)
+        _ => MAX_EDGE,
+    }
+}
+
+/// Convert a window pixel size to a back-buffer size under the active performance
+/// scale, clamped to the scene's max-edge backstop.
+fn backbuffer_size(win_w: i32, win_h: i32, scale: f32, max_edge: u32) -> (u32, u32) {
     let s = scale.clamp(0.1, 1.0);
     let mut w = ((win_w.max(1) as f32) * s).round() as u32;
     let mut h = ((win_h.max(1) as f32) * s).round() as u32;
     let longest = w.max(h);
-    if longest > MAX_EDGE {
-        let k = MAX_EDGE as f32 / longest as f32;
+    if longest > max_edge {
+        let k = max_edge as f32 / longest as f32;
         w = ((w as f32) * k) as u32;
         h = ((h as f32) * k) as u32;
     }
@@ -231,10 +245,10 @@ fn effective_profile(base_scale: f32, base_frame: f32, on_batt: bool) -> (f32, D
 /// (Re)build one render surface per screensaver window at the given render scale.
 /// Used both at startup and when the power source flips mid-run and the scale
 /// changes (old surfaces drop, new ones are created against the same HWNDs).
-fn build_surfaces(gfx: &Gfx, wins: &[(HWND, i32, i32)], scale: f32) -> Vec<Surface> {
+fn build_surfaces(gfx: &Gfx, wins: &[(HWND, i32, i32)], scale: f32, max_edge: u32) -> Vec<Surface> {
     let mut surfaces = Vec::with_capacity(wins.len());
     for &(hwnd, w, h) in wins {
-        let (bw, bh) = backbuffer_size(w, h, scale);
+        let (bw, bh) = backbuffer_size(w, h, scale, max_edge);
         if let Ok(surf) = gfx.create_surface(hwnd, bw, bh) {
             surfaces.push(surf);
         }
@@ -383,7 +397,8 @@ fn run_saver() -> windows::core::Result<()> {
             );
         }
     }
-    let mut surfaces = build_surfaces(&gfx, &windows_hw, scale);
+    let max_edge = scene_max_edge(settings.scene);
+    let mut surfaces = build_surfaces(&gfx, &windows_hw, scale, max_edge);
 
     // Bail before touching the cursor so a failed init can't leave it hidden.
     log::line(&format!("saver: {} surface(s) created", surfaces.len()));
@@ -431,7 +446,7 @@ fn run_saver() -> windows::core::Result<()> {
                 target_frame = nf;
                 if (ns - scale).abs() > f32::EPSILON {
                     scale = ns;
-                    surfaces = build_surfaces(&gfx, &windows_hw, scale);
+                    surfaces = build_surfaces(&gfx, &windows_hw, scale, max_edge);
                 }
                 log::line(&format!(
                     "power change: on_battery={ob} scale={scale} fps={:.0}",
