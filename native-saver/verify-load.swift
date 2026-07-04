@@ -35,7 +35,26 @@ struct VerifyLoad {
         view.startAnimation()
         view.animateOneFrame()
         view.stopAnimation()
-        print("load-check OK: principalClass=\(cls), ScreenSaverView=true, instantiated=true, hasConfigureSheet=\(view.hasConfigureSheet)")
+
+        // Options sheet path. System Settings instantiates the saver in PREVIEW
+        // mode and vends its Options window via `configureSheet` — repeatedly, as
+        // it recreates the preview on every reselection. Exercise that exact path:
+        // a preview instance must construct, report hasConfigureSheet, and return a
+        // populated window twice in a row (the reuse/stale-state trap).
+        guard let preview = saverType.init(frame: rect, isPreview: true) else {
+            fail("preview init(frame:isPreview:true) returned nil")
+        }
+        guard preview.hasConfigureSheet else { fail("hasConfigureSheet is false") }
+        for attempt in 1...2 {
+            guard let sheet = preview.configureSheet else {
+                fail("configureSheet returned nil on attempt \(attempt)")
+            }
+            guard let content = sheet.contentView, !content.subviews.isEmpty else {
+                fail("configureSheet window has no populated contentView on attempt \(attempt)")
+            }
+        }
+        print("load-check OK: principalClass=\(cls), ScreenSaverView=true, instantiated=true, "
+            + "hasConfigureSheet=\(view.hasConfigureSheet), configureSheet=populated(x2)")
         exit(0)
     }
 }

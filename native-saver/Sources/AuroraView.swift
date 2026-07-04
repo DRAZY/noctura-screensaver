@@ -100,8 +100,17 @@ final class AuroraView: ScreenSaverView {
             renderer.apply(preferences: preferences)
         }
         configureClockLayers()
-        registerPowerObservers()
-        updatePowerState() // seed powerSaveActive before the first frame
+        // Battery adaptation is for the LIVE saver only. System Settings spawns
+        // throwaway preview instances (and vends the Options sheet from one of
+        // them) inside the notoriously fragile `legacyScreenSaver` host; touching
+        // IOKit power-source run-loop sources there piles up per-instance state in
+        // a process that already leaks views and can leave the Options sheet
+        // silently failing to present. A preview thumbnail never needs power
+        // management, so we simply never arm it there.
+        if !isPreview {
+            registerPowerObservers()
+            updatePowerState() // seed powerSaveActive before the first frame
+        }
         updateLayerGeometry()
     }
 

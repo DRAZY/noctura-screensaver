@@ -677,37 +677,46 @@ float3 sceneFractal(float2 uv0, float aspect) {
 }
 
 // ---- Scene 16: Drift -------------------------------------------------------
-// Homage to the macOS "Drift" screensaver: a dense field of short dashes, each a
-// flow-oriented capsule dropped in a jittered grid cell, streaming along a slow
-// vortex flow over big soft regions of palette color. Density → dash count, size
-// → swirl scale, intensity → glow. Faithful port of the WebGL / Metal Drift scene.
+// Homage to the macOS "Drift" screensaver (and its open tribute, Flux): short
+// dashes combed along a slow divergence-free flow field, their length and
+// brightness driven by local flow speed so still water thins to black and fast
+// water combs into long bright strokes, over big soft palette-colour regions.
+// Density → dash count, size → swirl scale, intensity → glow. Faithful port of
+// the WebGL / Metal Drift scene.
 float driftHash(float2 p) {
     p = frac(p * float2(123.34, 345.45));
     p += dot(p, p + 34.345);
     return frac(p.x * p.y);
 }
-float2 driftFlow(float2 x) {
-    x *= 0.6;
-    float e = 0.015;
-    float n0 = snoise(x);
-    float nx = snoise(x + float2(e, 0.0)) - n0;
-    float ny = snoise(x + float2(0.0, e)) - n0;
-    float2 tang = float2(-ny, nx);
-    tang = tang / (length(tang) + 1e-4);
-    tang += float2(0.55, 0.2) * 0.28; // laminar bias dissolves singularities
-    return normalize(tang);
+// Divergence-free flow velocity (curl of a smooth, slowly-evolving potential);
+// keeps true magnitude so flow speed varies across the frame. Laminar bias.
+float2 driftVel(float2 x, float t) {
+    float e = 0.02;
+    float2 d1 = float2(0.0, t * 0.05);
+    float2 d2 = float2(t * 0.04, 0.0);
+    float pxp = snoise((x + float2(e, 0.0)) * 0.6 + d1) + 0.5 * snoise((x + float2(e, 0.0)) * 1.3 + d2);
+    float pxm = snoise((x - float2(e, 0.0)) * 0.6 + d1) + 0.5 * snoise((x - float2(e, 0.0)) * 1.3 + d2);
+    float pyp = snoise((x + float2(0.0, e)) * 0.6 + d1) + 0.5 * snoise((x + float2(0.0, e)) * 1.3 + d2);
+    float pym = snoise((x - float2(0.0, e)) * 0.6 + d1) + 0.5 * snoise((x - float2(0.0, e)) * 1.3 + d2);
+    float2 curl = float2(pyp - pym, -(pxp - pxm)) / (2.0 * e);
+    return curl + float2(0.35, 0.12);
+}
+float driftSeg(float2 p, float2 a, float2 b) {
+    float2 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+    return length(pa - ba * h);
 }
 float3 sceneDrift(float2 uv0, float aspect) {
     float2 uv = float2((uv0.x - 0.5) * aspect, uv0.y - 0.5);
     float t = uTime * uSpeed;
     float flow = 2.4 * clamp(uSize, 0.4, 2.2);
     float grid = lerp(40.0, 68.0, clamp(uDensity, 0.0, 1.0));
+    float dash = 1.1;
     float glow = 0.9 + uIntensity;
 
-    float2 g = uv * grid;
-    float2 baseCell = floor(g);
-    float dashHalf = 0.37 / grid;
-    float dashThick = 0.14 / grid;
+    float2 baseCell = floor(uv * grid);
+    float cell1 = 1.0 / grid;
+    float dashThick = 0.13 * cell1;
 
     float lit = 0.0;
     [loop] for (int j = -1; j <= 1; j++) {
@@ -715,19 +724,19 @@ float3 sceneDrift(float2 uv0, float aspect) {
             float2 cell = baseCell + float2(float(i), float(j));
             float r = driftHash(cell);
             float r2 = driftHash(cell + 7.31);
-            float2 center = (cell + 0.5) / grid;
-            float2 dir = driftFlow(center * flow);
-            float2 perp = float2(-dir.y, dir.x);
-            center += (perp * (r - 0.5) * 0.5 + dir * (r2 - 0.5) * 0.25) / grid;
-            float life = frac(r * 13.0 + t * 0.7);
-            center += dir * ((life - 0.5) * 0.55) / grid;
-            float fade = smoothstep(0.0, 0.18, life) * smoothstep(1.0, 0.7, life);
-            float2 rel = uv - center;
-            float along = dot(rel, dir);
-            float across = dot(rel, perp);
-            float d = length(float2(max(abs(along) - dashHalf, 0.0), across));
-            float m = smoothstep(dashThick, dashThick * 0.35, d);
-            lit = max(lit, m * (0.5 + 0.5 * r) * fade);
+            float2 b = (cell + 0.5) * cell1 + (float2(r, r2) - 0.5) * 0.55 * cell1;
+            float2 v0 = driftVel(b * flow, t);
+            float speed = length(v0);
+            float2 dir = v0 / max(speed, 1e-4);
+            float amp = smoothstep(0.15, 1.1, speed);
+            float halfLen = (0.3 + 0.55 * amp) * dash * cell1;
+            float2 back = b - dir * halfLen;
+            float2 fwd = b + dir * halfLen;
+            float life = frac(r * 13.0 + t * 0.6);
+            float fade = smoothstep(0.0, 0.2, life) * smoothstep(1.0, 0.65, life);
+            float d = driftSeg(uv, back, fwd);
+            float m = smoothstep(dashThick, dashThick * 0.3, d);
+            lit = max(lit, m * (0.45 + 0.55 * r) * (0.35 + 0.65 * amp) * fade);
         }
     }
 

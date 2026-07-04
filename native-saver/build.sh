@@ -52,10 +52,24 @@ fi
 
 echo "==> Built: $SAVER"
 
+# Load-check: instantiate the bundle exactly as the screensaver host does and
+# exercise the Options-sheet path (preview instance vends a populated
+# configureSheet twice). Catches init crashes, a broken principal class, and the
+# "Options button does nothing" regression before the bundle ever ships.
+echo "==> Load-check (instantiate + Options sheet)"
+swiftc -O -parse-as-library -target "$TARGET" -framework AppKit -framework ScreenSaver \
+    -o "$BUILD/verify-load" "$DIR/verify-load.swift"
+"$BUILD/verify-load" "$SAVER"
+
 if [[ "${1:-}" == "--install" ]]; then
     DEST="$HOME/Library/Screen Savers"
     mkdir -p "$DEST"
     rm -rf "$DEST/Noctura.saver"
     cp -R "$SAVER" "$DEST/Noctura.saver"
     echo "==> Installed to $DEST/Noctura.saver"
+elif [[ "${1:-}" == "--uninstall" ]]; then
+    DEST="$HOME/Library/Screen Savers/Noctura.saver"
+    rm -rf "$DEST"
+    defaults delete com.aurora.screensaver 2>/dev/null || true
+    echo "==> Uninstalled $DEST (and cleared saved settings)"
 fi

@@ -5,17 +5,20 @@ import { DITHER, SIMPLEX_2D } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
 
 /**
- * Drift — an homage to the macOS "Drift" screensaver. Thousands of short dashes
- * are combed along a slowly-swirling flow field: the strands are contour lines of
- * a domain-warped noise field, broken into little drifting segments, over big
- * soft regions of blended palette color. The result is that woven, brushed-
- * fingerprint texture of light streaming around vortices on black.
+ * Drift — an homage to the macOS "Drift" screensaver, informed by its open
+ * tribute Flux (github.com/sandydoo/flux). Thousands of short dashes are combed
+ * along a slow, divergence-free flow field over big soft regions of palette
+ * color — the woven, brushed-fingerprint texture of light streaming around
+ * vortices on black.
  *
- * It is a single fullscreen fragment shader (no particles) so it ports cleanly to
- * the native Metal / D3D savers. Per pixel it: (1) domain-warps to make vortices,
- * (2) reads a scalar noise field + its gradient, (3) draws bright bands along the
- * field's contours (strands) cut into dashes across the flow direction, and
- * (4) tints everything by a large-scale palette-cycled color field.
+ * A single fullscreen fragment shader (no particles / no ping-pong) so it ports
+ * cleanly to the native Metal / D3D savers. Per pixel it walks the 3×3 grid of
+ * neighbouring cells; each cell drops one dash anchored at its (jittered) centre,
+ * oriented along the local flow velocity — the curl of a smooth, slowly-evolving
+ * scalar potential, kept UN-normalized so its magnitude survives. That magnitude
+ * (flow speed) drives each dash's length and brightness, so — exactly like Flux —
+ * still water thins to black and fast water combs into long bright strokes. Big
+ * palette-cycled colour regions tint the whole field.
  */
 
 const VERT = /* glsl */ `
@@ -55,19 +58,31 @@ float hash21(vec2 p) {
   return fract(p.x * p.y);
 }
 
-// Unit flow direction at position x: the gradient of a smooth low-frequency
-// potential rotated 90 degrees → long lazy vortices. A gentle global bias keeps
-// the combing laminar and dissolves the radial singularities at critical points.
-vec2 flowDir(vec2 x) {
-  x *= 0.6;
-  float e = 0.015;
-  float n0 = snoise(x);
-  float nx = snoise(x + vec2(e, 0.0)) - n0;
-  float ny = snoise(x + vec2(0.0, e)) - n0;
-  vec2 tang = vec2(-ny, nx);
-  tang = tang / (length(tang) + 1e-4);
-  tang += vec2(0.55, 0.2) * 0.28;
-  return normalize(tang);
+// Divergence-free flow velocity at x (curl of a smooth, slowly-evolving scalar
+// potential): vel = (dPot/dy, -dPot/dx). Unlike a normalized direction this
+// keeps the true magnitude, so — exactly like Flux/Drift — the flow is fast in
+// some places and near-still in others, which we use to vary dash length and
+// brightness. A gentle constant bias keeps the combing laminar and stops the
+// dashes from spinning wildly around critical points.
+vec2 driftVel(vec2 x, float t) {
+  float e = 0.02;
+  // Two slowly-drifting octaves → big lazy vortices that evolve over time.
+  // potential(p) = snoise(p*0.6 + drift) + 0.5*snoise(p*1.3 + drift2)
+  vec2 d1 = vec2(0.0, t * 0.05);
+  vec2 d2 = vec2(t * 0.04, 0.0);
+  float pxp = snoise((x + vec2(e, 0.0)) * 0.6 + d1) + 0.5 * snoise((x + vec2(e, 0.0)) * 1.3 + d2);
+  float pxm = snoise((x - vec2(e, 0.0)) * 0.6 + d1) + 0.5 * snoise((x - vec2(e, 0.0)) * 1.3 + d2);
+  float pyp = snoise((x + vec2(0.0, e)) * 0.6 + d1) + 0.5 * snoise((x + vec2(0.0, e)) * 1.3 + d2);
+  float pym = snoise((x - vec2(0.0, e)) * 0.6 + d1) + 0.5 * snoise((x - vec2(0.0, e)) * 1.3 + d2);
+  vec2 curl = vec2(pyp - pym, -(pxp - pxm)) / (2.0 * e);
+  return curl + vec2(0.35, 0.12); // laminar bias
+}
+
+// Distance from p to the segment a→b (for drawing a rounded line as a capsule).
+float segDist(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+  return length(pa - ba * h);
 }
 
 void main() {
@@ -76,46 +91,49 @@ void main() {
   vec2 uv = vec2((vUv.x - 0.5) * aspect, vUv.y - 0.5);
   float t = uTime * uSpeed;
 
-  // Dash grid in uv space. We visit the 3x3 neighbourhood so a dash whose body
-  // crosses a cell border is still drawn on the neighbouring pixels.
+  // Dash grid in uv space; 3x3 neighbourhood so a dash whose curved body crosses
+  // a cell border is still drawn on neighbouring pixels.
   vec2 g = uv * uGrid;
   vec2 baseCell = floor(g);
 
-  float dashHalf = (0.34 / uGrid) * uDash; // half length of a dash, uv units
-  float dashThick = 0.14 / uGrid;          // half thickness of a dash, uv units
+  float cell1 = 1.0 / uGrid;
+  float dashThick = 0.13 * cell1;   // half thickness of a dash, uv units
 
-  // Every dash must stay within the sampled 3x3 neighbourhood or its body gets
-  // clipped at a cell edge — which reads as a grid overlay. So the total off-
-  // centre displacement (jitter + along-flow drift) plus the dash's own reach is
-  // kept under one cell: dashHalf(0.34)+dashThick(0.12)+maxDisp(~0.52) < 1.0.
   float lit = 0.0;
   for (int j = -1; j <= 1; j++) {
     for (int i = -1; i <= 1; i++) {
       vec2 cell = baseCell + vec2(float(i), float(j));
       float r = hash21(cell);
       float r2 = hash21(cell + 7.31);
-      vec2 center = (cell + 0.5) / uGrid;         // cell centre in uv space
-      vec2 dir = flowDir(center * uFlow);          // orient along local flow
-      vec2 perp = vec2(-dir.y, dir.x);
-      // Jitter off the lattice (mostly across-flow) so no rigid rows show.
-      center += (perp * (r - 0.5) * 0.5 + dir * (r2 - 0.5) * 0.25) / uGrid;
-      // Each dash streams part of a cell along the flow over its life, then loops;
-      // a per-cell phase staggers them so the field shimmers, never pulses.
-      float life = fract(r * 13.0 + t * 0.7);
-      center += dir * ((life - 0.5) * 0.55) / uGrid;
-      // Fade in and out over life so dashes twinkle in rather than pop.
-      float fade = smoothstep(0.0, 0.18, life) * smoothstep(1.0, 0.7, life);
 
-      // Distance to the oriented capsule (rounded line segment) = one dash.
-      vec2 rel = uv - center;
-      float along = dot(rel, dir);
-      float across = dot(rel, perp);
-      float d = length(vec2(max(abs(along) - dashHalf, 0.0), across));
-      // Fixed-width soft edge. NOT fwidth(d): d is per-cell and jumps across cell
-      // boundaries, so fwidth(d) spikes there and paints a grid. The smoothstep
-      // band itself (0.35..1.0 of the thickness) gives ~1px anti-aliasing.
-      float m = smoothstep(dashThick, dashThick * 0.35, d);
-      lit = max(lit, m * (0.5 + 0.5 * r)); // per-dash brightness variation
+      // Anchor: cell centre, jittered off the lattice so no rigid rows show.
+      vec2 b = (cell + 0.5) * cell1 + (vec2(r, r2) - 0.5) * 0.55 * cell1;
+
+      // Sample the flow at the anchor. Speed drives length + brightness so slow
+      // water thins out and fast water combs into long bright strokes (Flux).
+      vec2 v0 = driftVel(b * uFlow, t);
+      float speed = length(v0);
+      vec2 dir = v0 / max(speed, 1e-4);
+      float amp = smoothstep(0.15, 1.1, speed); // 0 in still water, 1 in fast flow
+
+      // One short capsule oriented along the local flow, centred on the anchor.
+      // Length grows with flow speed and uDash. It's intentionally a single
+      // straight segment: the field's curvature emerges from thousands of short
+      // dashes each aligned to their own local flow, exactly like the reference —
+      // per-dash bending only produces kinks, not smoother curves.
+      float halfLen = (0.3 + 0.55 * amp) * uDash * cell1;
+      vec2 back = b - dir * halfLen;
+      vec2 fwd = b + dir * halfLen;
+
+      // Animate: slide the phase along the flow so dashes stream and twinkle.
+      float life = fract(r * 13.0 + t * 0.6);
+      float fade = smoothstep(0.0, 0.2, life) * smoothstep(1.0, 0.65, life);
+
+      // Distance to the capsule (rounded line) = one dash. Fixed-width soft edge
+      // (NOT fwidth: d is per-cell and jumps at borders, which paints a grid).
+      float d = segDist(uv, back, fwd);
+      float m = smoothstep(dashThick, dashThick * 0.3, d);
+      lit = max(lit, m * (0.45 + 0.55 * r) * (0.35 + 0.65 * amp) * fade);
     }
   }
 

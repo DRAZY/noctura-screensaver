@@ -27,5 +27,11 @@ cp target/x86_64-pc-windows-msvc/release/noctura.exe  "$OUT/Noctura-x64.exe"
 cp target/aarch64-pc-windows-msvc/release/noctura.exe "$OUT/Noctura-arm64.scr"
 cp target/aarch64-pc-windows-msvc/release/noctura.exe "$OUT/Noctura-arm64.exe"
 
+# Ship the install/uninstall helpers + readme alongside the binaries so the
+# distributed zip is self-installing (and cleanly removable).
+cp packaging/Install-Noctura.bat   "$OUT/"
+cp packaging/Uninstall-Noctura.bat "$OUT/"
+cp packaging/README.txt            "$OUT/"
+
 echo "==> Done. Artifacts in $OUT:"
 ls -lh "$OUT"

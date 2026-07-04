@@ -16,12 +16,17 @@ Grab the latest build from the [**Releases**](../../releases/latest) page.
 |---|---|---|
 | **macOS** (Apple Silicon) | `Noctura_<ver>_aarch64.dmg` | Smallest; M-series Macs |
 | **macOS** (Intel + Apple Silicon) | `Noctura_<ver>_universal.dmg` | Works on any Mac |
-| **macOS screensaver** | `Noctura.saver.zip` | Installs into System Settings → Screen Saver |
-| **Windows** (x64 + ARM64) | `Noctura-Windows.zip` | Installer auto-detects your CPU; includes both builds |
+| **macOS screensaver** | `Noctura.saver.zip` | Includes `Install-Noctura.command` / `Uninstall-Noctura.command` |
+| **Windows** (x64 + ARM64) | `Noctura-Windows.zip` | Includes `Install-Noctura.bat` / `Uninstall-Noctura.bat`; installer auto-detects your CPU |
 
 > Builds are unsigned (no paid Developer ID), so the OS warns on first launch — you can still install:
 > - **macOS:** double-click → Cancel, then **System Settings → Privacy & Security → Open Anyway**. Guaranteed alternative: `xattr -dr com.apple.quarantine /Applications/Noctura.app`. (The DMG includes an "OPEN ME FIRST" guide.)
 > - **Windows:** SmartScreen → **More info → Run anyway**.
+
+### Uninstall
+- **macOS app (DMG):** drag `Noctura.app` from Applications to the Trash.
+- **macOS screensaver:** run `Uninstall-Noctura.command` from the zip (removes the saver + its saved settings). Manual: delete `~/Library/Screen Savers/Noctura.saver`.
+- **Windows:** run `Uninstall-Noctura.bat` from the zip (self-elevates, removes `Noctura.scr`).
 
 ---
 
