@@ -737,8 +737,7 @@ float snoise3(float3 v) {
 }
 float driftPsi(float2 p, float t) {
     return 1.00 * snoise3(float3(p * 0.9, t * 0.05))
-         + 0.65 * snoise3(float3(p * 2.4, t * 0.12))
-         + 0.38 * snoise3(float3(p * 4.8, t * 0.20));
+         + 0.55 * snoise3(float3(p * 2.4, t * 0.12));
 }
 float2 driftVel(float2 p, float t) {
     const float e = 0.75;
@@ -752,8 +751,8 @@ float3 sceneDrift(float2 uv0, float aspect) {
     float flow = 2.0 * clamp(uSize, 0.4, 2.2);
     float grid = lerp(36.0, 52.0, clamp(uDensity, 0.0, 1.0));
     float glow = 1.0 + uIntensity;
-    const int KSTEPS = 6;
-    const int SEARCH = 6;
+    const int KSTEPS = 4;
+    const int SEARCH = 3;
     const float LINE_BEGIN_OFFSET = 0.4;
     const float LINE_VARIANCE = 0.55;
     const float SPEED_GAIN = 2.0;
@@ -762,7 +761,7 @@ float3 sceneDrift(float2 uv0, float aspect) {
 
     float cell = 1.0 / grid;
     float2 baseId = floor(uv / cell);
-    float lenCells = min(5.0, (float)SEARCH);
+    float lenCells = min(3.0, (float)SEARCH);
     float accum = 0.0;
     [loop] for (int j = -SEARCH; j <= SEARCH; j++) {
         [loop] for (int i = -SEARCH; i <= SEARCH; i++) {
@@ -779,20 +778,18 @@ float3 sceneDrift(float2 uv0, float aspect) {
             if (dot(uv - bp, uv - bp) > (lineLen + halfW) * (lineLen + halfW)) continue;
             float ds = lineLen / float(KSTEPS);
             float2 pPrev = bp;
+            float2 vPrev = v0;                    // reuse the boost-check sample
             float best = 1e9, bestS = 0.0, arc = 0.0;
-            [loop] for (int k = 0; k < KSTEPS; k++) {
-                float2 vk = driftVel(pPrev * flow, t);
-                float2 dk = vk / max(length(vk), 1e-5);
-                float2 pMid = pPrev + dk * (0.5 * ds);
-                float2 vm = driftVel(pMid * flow, t);
-                float2 dm = vm / max(length(vm), 1e-5);
-                float2 pNext = pPrev + dm * ds;
+            [loop] for (int k = 0; k < KSTEPS; k++) {   // Euler integration (one velocity/step)
+                float2 dk = vPrev / max(length(vPrev), 1e-5);
+                float2 pNext = pPrev + dk * ds;
                 float2 pa = uv - pPrev, ba = pNext - pPrev;
                 float hh = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
                 float d = length(pa - ba * hh);
                 float sp = (arc + hh * ds) / lineLen;
                 if (d < best) { best = d; bestS = sp; }
                 arc += ds; pPrev = pNext;
+                vPrev = driftVel(pPrev * flow, t);
             }
             float fade = smoothstep(LINE_BEGIN_OFFSET, 1.0, bestS);
             float aa = 1.5 / uResolution.y + 1e-5;

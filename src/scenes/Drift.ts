@@ -47,9 +47,12 @@ uniform vec3  uSky;      // near-black background
 ${SIMPLEX_3D}
 ${DITHER}
 
-// Fixed tunables (from the validated prototype; not user-facing).
-#define KSTEPS 6                    // streamline polyline segments (RK2)
-#define SEARCH 6                    // basepoint neighbourhood half-width (>= uLen)
+// Fixed tunables. Kept deliberately small: this scene's cost is
+// (2*SEARCH+1)^2 * KSTEPS * (noise evals) per pixel, so SEARCH/KSTEPS/octaves are
+// the GPU budget. These values keep it real-time on integrated GPUs; the earlier
+// SEARCH=6/KSTEPS=6/3-octave settings did ~26k noise evals/pixel and pegged GPUs.
+#define KSTEPS 4                    // streamline polyline segments (Euler)
+#define SEARCH 3                    // basepoint neighbourhood half-width (>= uLen)
 const float LINE_BEGIN_OFFSET = 0.4;
 const float LINE_VARIANCE = 0.55;
 const float SPEED_GAIN = 2.0;       // width_boost = clamp(GAIN * |v|, 0, 1)
@@ -70,11 +73,11 @@ float hash21(vec2 p) {
   return fract(p.x * p.y);
 }
 
-// 3-octave simplex stream function; its curl (below) is a divergence-free flow.
+// 2-octave simplex stream function; its curl (below) is a divergence-free flow.
+// (2 octaves, not 3 — halving the noise cost of the hottest function in the scene.)
 float streamPsi(vec2 p, float t) {
   return 1.00 * snoise3(vec3(p * 0.9, t * 0.05))
-       + 0.65 * snoise3(vec3(p * 2.4, t * 0.12))
-       + 0.38 * snoise3(vec3(p * 4.8, t * 0.20));
+       + 0.55 * snoise3(vec3(p * 2.4, t * 0.12));
 }
 
 // Flow velocity = curl of the stream function (finite differences). UN-normalized
@@ -110,20 +113,18 @@ float streakField(vec2 uv, float t) {
 
       float ds = lineLen / float(KSTEPS);
       vec2 pPrev = bp;
+      vec2 vPrev = v0;                                 // reuse the boost-check sample
       float best = 1e9, bestS = 0.0, arc = 0.0;
-      for (int k = 0; k < KSTEPS; k++) {               // integrate the streamline (RK2)
-        vec2 vk = velocityAt(pPrev * uFlow, t);
-        vec2 dk = vk / max(length(vk), 1e-5);
-        vec2 pMid = pPrev + dk * (0.5 * ds);
-        vec2 vm = velocityAt(pMid * uFlow, t);
-        vec2 dm = vm / max(length(vm), 1e-5);
-        vec2 pNext = pPrev + dm * ds;
+      for (int k = 0; k < KSTEPS; k++) {               // integrate the streamline (Euler)
+        vec2 dk = vPrev / max(length(vPrev), 1e-5);
+        vec2 pNext = pPrev + dk * ds;
         vec2 pa = uv - pPrev, ba = pNext - pPrev;
         float hh = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
         float d = length(pa - ba * hh);
         float s = (arc + hh * ds) / lineLen;           // 0 at base, 1 at tip
         if (d < best) { best = d; bestS = s; }
         arc += ds; pPrev = pNext;
+        vPrev = velocityAt(pPrev * uFlow, t);          // one velocity eval per step
       }
       float fade = smoothstep(LINE_BEGIN_OFFSET, 1.0, bestS); // tail fades out
       float aa = 1.5 / uResolution.y + 1e-5;           // fixed AA (NOT fwidth — grids at seams)
@@ -163,9 +164,9 @@ void main() {
 
 const DEFAULT_THEME = "nebula";
 const DEFAULT_FLOW = 2.0;   // swirl scale
-const DEFAULT_GRID = 42;    // grid density (cells across the field)
-const DEFAULT_LEN = 5.0;    // streamline length in cells (SEARCH=6 caps it)
-const DEFAULT_GLOW = 1.5;
+const DEFAULT_GRID = 40;    // grid density (cells across the field)
+const DEFAULT_LEN = 3.0;    // streamline length in cells (must be <= SEARCH=3)
+const DEFAULT_GLOW = 1.6;
 // Drift's signature is multi-hue (magenta / green / blue), so the default color
 // stops are a vibrant triad rather than a single-hue palette. Picking a Theme in
 // the UI overrides these with that palette's stops.
@@ -182,7 +183,7 @@ export class Drift extends FullscreenScene {
     { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 1.5, step: 0.01, default: 0.3 },
     { kind: "range", id: "scale", label: "Swirl Scale", min: 1.2, max: 4.0, step: 0.1, default: DEFAULT_FLOW },
     { kind: "range", id: "density", label: "Density", min: 30, max: 56, step: 1, default: DEFAULT_GRID },
-    { kind: "range", id: "dash", label: "Stroke Length", min: 3.0, max: 6.0, step: 0.5, default: DEFAULT_LEN },
+    { kind: "range", id: "dash", label: "Stroke Length", min: 1.5, max: 3.0, step: 0.25, default: DEFAULT_LEN },
     { kind: "range", id: "glow", label: "Glow", min: 0.4, max: 2.4, step: 0.05, default: DEFAULT_GLOW },
     { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: DEFAULT_THEME },
     { kind: "color", id: "colorA", label: "Color A", default: DRIFT_A },
