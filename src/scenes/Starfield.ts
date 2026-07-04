@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue } from "../engine/types";
-import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
+import type { ParameterValue } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
+import { NATIVE_PARAMETERS, remapSpeed, remapIntensity, remapDensity } from "../engine/sceneParams";
 import { DITHER, FBM_2D, SIMPLEX_2D } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
 
@@ -84,14 +85,7 @@ export class Starfield extends FullscreenScene {
   readonly name = "Deep Space";
   readonly description = "Parallax stars drifting through a soft nebula.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 1.2, step: 0.01, default: 0.4 },
-    { kind: "range", id: "density", label: "Star Density", min: 0.0, max: 1.0, step: 0.01, default: 0.5 },
-    { kind: "range", id: "nebula", label: "Nebula", min: 0.0, max: 1.5, step: 0.01, default: 0.9 },
-    { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "deepspace" },
-    { kind: "color", id: "nebulaColor", label: "Nebula Color", default: "#3a2f8f" },
-    { kind: "color", id: "starTint", label: "Star Tint", default: "#cfe0ff" },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   protected createMaterial(): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
@@ -116,27 +110,20 @@ export class Starfield extends FullscreenScene {
     const u = this.material.uniforms;
     switch (id) {
       case "speed":
-        u.uSpeed.value = Number(value);
+        u.uSpeed.value = remapSpeed(Number(value), 0.4);
         break;
       case "density":
-        u.uDensity.value = Number(value);
+        u.uDensity.value = remapDensity(Number(value), 0.5);
         break;
-      case "nebula":
-        u.uNebula.value = Number(value);
+      case "intensity":
+        u.uNebula.value = remapIntensity(Number(value), 0.9);
         break;
       case "theme": {
         const p = paletteById(String(value));
-        (u.uDeepColor.value as THREE.Color).set(p.a);
         (u.uNebulaColor.value as THREE.Color).set(p.b);
         (u.uStarTint.value as THREE.Color).set(p.c);
         break;
       }
-      case "nebulaColor":
-        (u.uNebulaColor.value as THREE.Color).set(String(value));
-        break;
-      case "starTint":
-        (u.uStarTint.value as THREE.Color).set(String(value));
-        break;
     }
   }
 }

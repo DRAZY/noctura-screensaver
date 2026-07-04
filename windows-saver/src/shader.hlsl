@@ -748,32 +748,38 @@ float2 driftVel(float2 p, float t) {
     float dy = driftPsi(p + float2(0.0, e), t) - c;
     // Curl → divergence-free, plus a small constant laminar bias that keeps flow
     // moving where the gradient vanishes (kills radial "starburst" singularities).
-    return float2(dy, -dx) / e + float2(0.22, 0.08);
+    // Bias lowered to match the validated web/macOS scene: gentler, more coherent.
+    return float2(dy, -dx) / e + float2(0.12, 0.05);
 }
 float3 sceneDrift(float2 uv0, float aspect) {
     float2 uv = float2((uv0.x - 0.5) * aspect, uv0.y - 0.5);
     float t = uTime * uSpeed;
-    float flow = 2.0 * clamp(uSize, 0.4, 2.2);
-    float grid = lerp(26.0, 40.0, clamp(uDensity, 0.0, 1.0));
+    // Lower swirl frequency → smoother, more coherent streams (matches web/macOS).
+    float flow = 1.3 * clamp(uSize * 1.05, 0.6, 1.7);
+    // Denser grid → short dashes with fine texture (cost is a fixed per-pixel
+    // neighbourhood, so a finer grid is essentially free).
+    float grid = lerp(70.0, 110.0, clamp(uDensity, 0.0, 1.0));
     float glow = 1.0 + uIntensity;
     const int KSTEPS = 3;
-    const int SEARCH = 2;
+    const int SEARCH = 1;   // 3×3 neighbourhood — the finer grid keeps dashes short.
     const float LINE_BEGIN_OFFSET = 0.4;
     const float LINE_VARIANCE = 0.55;
-    const float SPEED_GAIN = 2.6;
     const float HALF_WIDTH = 0.20;
     const float HEAD_GLOW = 0.22;
 
     float cell = 1.0 / grid;
     float2 baseId = floor(uv / cell);
-    float lenCells = min(2.0, (float)SEARCH);
+    float lenCells = 2.0;   // dash length in cells (decoupled from SEARCH)
     float accum = 0.0;
     [loop] for (int j = -SEARCH; j <= SEARCH; j++) {
         [loop] for (int i = -SEARCH; i <= SEARCH; i++) {
             float2 cellId = baseId + float2(float(i), float(j));
-            float2 bp = (cellId + 0.5) * cell;
+            // Jittered basepoint so streams don't read as a rigid lattice.
+            float2 jit = (float2(driftHash(cellId), driftHash(cellId + 7.3)) - 0.5) * 0.7;
+            float2 bp = (cellId + 0.5 + jit) * cell;
             float2 v0 = driftVel(bp * flow, t);
-            float boost = smoothstep(0.0, 1.0, clamp(SPEED_GAIN * length(v0), 0.0, 1.0));
+            // Steeper, higher-threshold speed gate: calm flow → 0 (black negative space).
+            float boost = smoothstep(0.0, 1.0, clamp(1.7 * length(v0) - 0.25, 0.0, 1.0));
             if (boost < 0.01) continue;
             float rnd = driftHash(cellId);
             float variance = lerp(1.0 - LINE_VARIANCE, 1.0, rnd);
@@ -799,7 +805,9 @@ float3 sceneDrift(float2 uv0, float aspect) {
             float fade = smoothstep(LINE_BEGIN_OFFSET, 1.0, bestS);
             float aa = min(1.5 * fwidth(uv.y), halfW * 0.9) + 1e-5; // capped to halfW so thin strokes survive low res
             float edge = 1.0 - smoothstep(halfW - aa, halfW, best);
-            float alpha = boost * fade * edge;
+            // Squared speed weighting: fast flow lights up, everything else stays
+            // dark → the breathing negative space of real Drift.
+            float alpha = boost * boost * fade * edge;
             if (alpha <= 0.0) continue;
             alpha += HEAD_GLOW * smoothstep(0.8, 1.0, bestS) * edge * boost;
             accum += alpha;
@@ -809,7 +817,12 @@ float3 sceneDrift(float2 uv0, float aspect) {
     float creg = 0.7 * snoise(uv * flow * 0.22 + float2(t * 0.05, 0.0))
                + 0.55 * (uv.x + uv.y) + 0.04 * t;
     float3 tint = ncCyc(creg);
-    float3 outc = float3(0.016, 0.012, 0.039) + tint * accum * glow;
+    // Pull the palette toward its own luma → dusty, desaturated tones (matches the
+    // web/macOS Drift), while still honouring the chosen Style. Additive overlap
+    // lifts crossings toward cream.
+    float l = dot(tint, float3(0.299, 0.587, 0.114));
+    tint = lerp(float3(l, l, l), tint, 0.72);
+    float3 outc = float3(0.012, 0.010, 0.030) + tint * accum * glow;
     float vig = 1.0 - 0.26 * dot(uv0 - 0.5, uv0 - 0.5);
     outc *= vig;
     outc = outc / (outc + 0.85);

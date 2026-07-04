@@ -1,8 +1,9 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue } from "../engine/types";
-import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
+import type { ParameterValue } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
 import { DITHER, FBM_2D, SIMPLEX_2D } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
+import { NATIVE_PARAMETERS, remapSpeed, remapSize } from "../engine/sceneParams";
 
 /**
  * Kaleidoscope: the plane is folded into N mirrored wedges, so a slowly drifting
@@ -93,14 +94,7 @@ export class Kaleidoscope extends FullscreenScene {
   readonly name = "Kaleidoscope";
   readonly description = "A living mandala of mirrored, flowing color.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 1.5, step: 0.01, default: DEFAULT_SPEED },
-    { kind: "range", id: "sides", label: "Segments", min: 3, max: 16, step: 1, default: DEFAULT_SIDES },
-    { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "nebula" },
-    { kind: "color", id: "colorA", label: "Color A", default: "#0a0418" },
-    { kind: "color", id: "colorB", label: "Color B", default: "#7b2ff7" },
-    { kind: "color", id: "colorC", label: "Color C", default: "#f76fd4" },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   protected createMaterial(): THREE.ShaderMaterial {
     const p = paletteById("nebula");
@@ -125,10 +119,10 @@ export class Kaleidoscope extends FullscreenScene {
     const u = this.material.uniforms;
     switch (id) {
       case "speed":
-        u.uSpeed.value = Number(value);
+        u.uSpeed.value = remapSpeed(Number(value), 0.5);
         break;
-      case "sides":
-        u.uSides.value = Number(value);
+      case "size":
+        u.uSides.value = Math.round(remapSize(Number(value), 8));
         break;
       case "theme": {
         const p = paletteById(String(value));
@@ -137,15 +131,6 @@ export class Kaleidoscope extends FullscreenScene {
         (u.uColorC.value as THREE.Color).set(p.c);
         break;
       }
-      case "colorA":
-        (u.uColorA.value as THREE.Color).set(String(value));
-        break;
-      case "colorB":
-        (u.uColorB.value as THREE.Color).set(String(value));
-        break;
-      case "colorC":
-        (u.uColorC.value as THREE.Color).set(String(value));
-        break;
     }
   }
 }

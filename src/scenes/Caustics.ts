@@ -1,8 +1,9 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue } from "../engine/types";
-import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
+import type { ParameterValue } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
 import { DITHER, FBM_2D, SIMPLEX_2D } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
+import { NATIVE_PARAMETERS, remapSpeed, remapDensity, remapSize } from "../engine/sceneParams";
 
 /**
  * Caustics: the shimmering web of light you see on the floor of a sunlit pool.
@@ -146,15 +147,7 @@ export class Caustics extends FullscreenScene {
   readonly name = "Caustics";
   readonly description = "Sunlit pool caustics — rippling webs of light over deep water.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 1.2, step: 0.01, default: DEFAULT_SPEED },
-    { kind: "range", id: "scale", label: "Scale", min: 2.0, max: 12.0, step: 0.1, default: DEFAULT_SCALE },
-    { kind: "range", id: "size", label: "Light Size", min: 0.4, max: 2.5, step: 0.01, default: DEFAULT_SIZE },
-    { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: DEFAULT_THEME },
-    { kind: "color", id: "colorA", label: "Color A", default: paletteById(DEFAULT_THEME).a },
-    { kind: "color", id: "colorB", label: "Color B", default: paletteById(DEFAULT_THEME).b },
-    { kind: "color", id: "colorC", label: "Color C", default: paletteById(DEFAULT_THEME).c },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   protected createMaterial(): THREE.ShaderMaterial {
     const p = paletteById(DEFAULT_THEME);
@@ -180,13 +173,13 @@ export class Caustics extends FullscreenScene {
     const u = this.material.uniforms;
     switch (id) {
       case "speed":
-        u.uSpeed.value = Number(value);
+        u.uSpeed.value = remapSpeed(Number(value), DEFAULT_SPEED);
         break;
-      case "scale":
-        u.uScale.value = Number(value);
+      case "density":
+        u.uScale.value = remapDensity(Number(value), DEFAULT_SCALE);
         break;
       case "size":
-        u.uSize.value = Number(value);
+        u.uSize.value = remapSize(Number(value), DEFAULT_SIZE);
         break;
       case "theme": {
         const p = paletteById(String(value));
@@ -195,15 +188,6 @@ export class Caustics extends FullscreenScene {
         (u.uColorC.value as THREE.Color).set(p.c);
         break;
       }
-      case "colorA":
-        (u.uColorA.value as THREE.Color).set(String(value));
-        break;
-      case "colorB":
-        (u.uColorB.value as THREE.Color).set(String(value));
-        break;
-      case "colorC":
-        (u.uColorC.value as THREE.Color).set(String(value));
-        break;
     }
   }
 }

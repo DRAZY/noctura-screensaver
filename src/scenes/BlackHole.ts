@@ -1,8 +1,9 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue } from "../engine/types";
-import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
+import type { ParameterValue } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
 import { DITHER, FBM_2D, SIMPLEX_2D } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
+import { NATIVE_PARAMETERS, remapSpeed, remapSize } from "../engine/sceneParams";
 
 /**
  * A black hole with a swirling accretion disk and a bright photon ring around a
@@ -81,13 +82,7 @@ export class BlackHole extends FullscreenScene {
   readonly name = "Black Hole";
   readonly description = "A glowing accretion disk swirling into the void.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.1, max: 1.5, step: 0.01, default: DEFAULT_SPEED },
-    { kind: "range", id: "size", label: "Size", min: 1.0, max: 2.4, step: 0.05, default: DEFAULT_SIZE },
-    { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "ember" },
-    { kind: "color", id: "colorInner", label: "Inner", default: "#fff1c2" },
-    { kind: "color", id: "colorOuter", label: "Outer", default: "#c73b0a" },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   protected createMaterial(): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
@@ -110,10 +105,10 @@ export class BlackHole extends FullscreenScene {
     const u = this.material.uniforms;
     switch (id) {
       case "speed":
-        u.uSpeed.value = Number(value);
+        u.uSpeed.value = remapSpeed(Number(value), DEFAULT_SPEED);
         break;
       case "size":
-        u.uSize.value = Number(value);
+        u.uSize.value = remapSize(Number(value), DEFAULT_SIZE);
         break;
       case "theme": {
         const p = paletteById(String(value));
@@ -121,12 +116,6 @@ export class BlackHole extends FullscreenScene {
         (u.uColorOuter.value as THREE.Color).set(p.b);
         break;
       }
-      case "colorInner":
-        (u.uColorInner.value as THREE.Color).set(String(value));
-        break;
-      case "colorOuter":
-        (u.uColorOuter.value as THREE.Color).set(String(value));
-        break;
     }
   }
 }

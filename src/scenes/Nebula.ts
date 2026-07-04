@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue } from "../engine/types";
-import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
+import type { ParameterValue } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
+import { NATIVE_PARAMETERS, remapSpeed, remapDensity, remapIntensity, remapSize } from "../engine/sceneParams";
 import { SIMPLEX_2D, FBM_2D, DITHER } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
 
@@ -116,16 +117,7 @@ export class Nebula extends FullscreenScene {
   readonly name = "Nebula Drift";
   readonly description = "A luminous, multi-colored interstellar gas cloud.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 1.2, step: 0.01, default: DEFAULT_SPEED },
-    { kind: "range", id: "scale", label: "Scale", min: 1.0, max: 5.0, step: 0.05, default: DEFAULT_SCALE },
-    { kind: "range", id: "density", label: "Density", min: 0.0, max: 1.0, step: 0.01, default: DEFAULT_DENSITY },
-    { kind: "range", id: "intensity", label: "Glow", min: 0.0, max: 1.5, step: 0.01, default: DEFAULT_INTENSITY },
-    { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "nebula" },
-    { kind: "color", id: "colorA", label: "Color A", default: "#0a0418" },
-    { kind: "color", id: "colorB", label: "Color B", default: "#3a6ff7" },
-    { kind: "color", id: "colorC", label: "Color C", default: "#f76fd4" },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   protected createMaterial(): THREE.ShaderMaterial {
     const p = paletteById("nebula");
@@ -152,16 +144,16 @@ export class Nebula extends FullscreenScene {
     const u = this.material.uniforms;
     switch (id) {
       case "speed":
-        u.uSpeed.value = Number(value);
-        break;
-      case "scale":
-        u.uScale.value = Number(value);
+        u.uSpeed.value = remapSpeed(Number(value), DEFAULT_SPEED);
         break;
       case "density":
-        u.uDensity.value = Number(value);
+        u.uDensity.value = remapDensity(Number(value), DEFAULT_DENSITY);
         break;
       case "intensity":
-        u.uIntensity.value = Number(value);
+        u.uIntensity.value = remapIntensity(Number(value), DEFAULT_INTENSITY);
+        break;
+      case "size":
+        u.uScale.value = remapSize(Number(value), DEFAULT_SCALE);
         break;
       case "theme": {
         const p = paletteById(String(value));
@@ -170,15 +162,6 @@ export class Nebula extends FullscreenScene {
         (u.uColorC.value as THREE.Color).set(p.c);
         break;
       }
-      case "colorA":
-        (u.uColorA.value as THREE.Color).set(String(value));
-        break;
-      case "colorB":
-        (u.uColorB.value as THREE.Color).set(String(value));
-        break;
-      case "colorC":
-        (u.uColorC.value as THREE.Color).set(String(value));
-        break;
     }
   }
 }

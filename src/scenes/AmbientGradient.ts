@@ -1,8 +1,9 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue } from "../engine/types";
-import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
+import type { ParameterValue } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
 import { DITHER, FBM_2D, SIMPLEX_2D } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
+import { NATIVE_PARAMETERS, remapSpeed } from "../engine/sceneParams";
 
 /**
  * Ambient flowing-gradient scene (Aeon / Drift aesthetic). Domain-warped FBM
@@ -61,13 +62,7 @@ export class AmbientGradient extends FullscreenScene {
   readonly name = "Aurora Drift";
   readonly description = "Slow domain-warped color fields — calm, cinematic.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.02, max: 0.6, step: 0.01, default: DEFAULT_SPEED },
-    { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "aurora" },
-    { kind: "color", id: "colorA", label: "Color A", default: "#1a1240" },
-    { kind: "color", id: "colorB", label: "Color B", default: "#c81e8a" },
-    { kind: "color", id: "colorC", label: "Color C", default: "#f5a623" },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   protected createMaterial(): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
@@ -90,7 +85,7 @@ export class AmbientGradient extends FullscreenScene {
     const u = this.material.uniforms;
     switch (id) {
       case "speed":
-        u.uSpeed.value = Number(value);
+        u.uSpeed.value = remapSpeed(Number(value), DEFAULT_SPEED);
         break;
       case "theme": {
         const p = paletteById(String(value));
@@ -99,15 +94,6 @@ export class AmbientGradient extends FullscreenScene {
         (u.uColorC.value as THREE.Color).set(p.c);
         break;
       }
-      case "colorA":
-        (u.uColorA.value as THREE.Color).set(String(value));
-        break;
-      case "colorB":
-        (u.uColorB.value as THREE.Color).set(String(value));
-        break;
-      case "colorC":
-        (u.uColorC.value as THREE.Color).set(String(value));
-        break;
     }
   }
 }

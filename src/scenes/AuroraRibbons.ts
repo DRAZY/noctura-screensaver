@@ -1,8 +1,9 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue } from "../engine/types";
-import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
+import type { ParameterValue } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
 import { DITHER, FBM_2D, SIMPLEX_2D } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
+import { NATIVE_PARAMETERS, remapSpeed, remapIntensity, remapDensity, remapSize } from "../engine/sceneParams";
 
 /**
  * Aurora ribbons (macOS XDR / "Aerial" northern-lights aesthetic). Several
@@ -99,15 +100,7 @@ export class AuroraRibbons extends FullscreenScene {
   readonly name = "Northern Lights";
   readonly description = "Translucent curtains of aurora swaying over a dark sky.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 1.5, step: 0.01, default: 0.5 },
-    { kind: "range", id: "count", label: "Ribbons", min: 1, max: 7, step: 1, default: 5 },
-    { kind: "range", id: "amplitude", label: "Sway", min: 0.0, max: 0.8, step: 0.01, default: 0.35 },
-    { kind: "range", id: "glow", label: "Glow", min: 0.3, max: 2.0, step: 0.05, default: 1.1 },
-    { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "borealis" },
-    { kind: "color", id: "colorA", label: "Low Color", default: "#13c285" },
-    { kind: "color", id: "colorB", label: "High Color", default: "#9ef26b" },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   protected createMaterial(): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
@@ -133,16 +126,16 @@ export class AuroraRibbons extends FullscreenScene {
     const u = this.material.uniforms;
     switch (id) {
       case "speed":
-        u.uSpeed.value = Number(value);
+        u.uSpeed.value = remapSpeed(Number(value), 0.5);
         break;
-      case "count":
-        u.uCount.value = Number(value);
+      case "density":
+        u.uCount.value = remapDensity(Number(value), 5);
         break;
-      case "amplitude":
-        u.uAmplitude.value = Number(value);
+      case "intensity":
+        u.uGlow.value = remapIntensity(Number(value), 1.1);
         break;
-      case "glow":
-        u.uGlow.value = Number(value);
+      case "size":
+        u.uAmplitude.value = remapSize(Number(value), 0.35);
         break;
       case "theme": {
         const p = paletteById(String(value));
@@ -151,12 +144,6 @@ export class AuroraRibbons extends FullscreenScene {
         (u.uColorB.value as THREE.Color).set(p.c);
         break;
       }
-      case "colorA":
-        (u.uColorA.value as THREE.Color).set(String(value));
-        break;
-      case "colorB":
-        (u.uColorB.value as THREE.Color).set(String(value));
-        break;
     }
   }
 }

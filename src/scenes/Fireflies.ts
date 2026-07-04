@@ -1,8 +1,9 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue } from "../engine/types";
-import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
+import type { ParameterValue } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
 import { DITHER, SIMPLEX_2D } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
+import { NATIVE_PARAMETERS, remapSpeed, remapIntensity, remapDensity, remapSize } from "../engine/sceneParams";
 
 /**
  * Fireflies drifting through a dark gradient field. Each firefly wanders on a
@@ -84,15 +85,7 @@ export class Fireflies extends FullscreenScene {
   readonly name = "Fireflies";
   readonly description = "A drifting swarm of glowing fireflies in the dark.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.1, max: 2.0, step: 0.05, default: DEFAULT_SPEED },
-    { kind: "range", id: "count", label: "Count", min: 6, max: 64, step: 1, default: DEFAULT_COUNT },
-    { kind: "range", id: "glow", label: "Glow", min: 0.3, max: 2.5, step: 0.05, default: DEFAULT_GLOW },
-    { kind: "range", id: "size", label: "Firefly Size", min: 0.4, max: 2.5, step: 0.05, default: DEFAULT_SIZE },
-    { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "ember" },
-    { kind: "color", id: "colorBg", label: "Background", default: "#05080a" },
-    { kind: "color", id: "colorFly", label: "Firefly", default: "#fad043" },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   protected createMaterial(): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
@@ -117,16 +110,16 @@ export class Fireflies extends FullscreenScene {
     const u = this.material.uniforms;
     switch (id) {
       case "speed":
-        u.uSpeed.value = Number(value);
+        u.uSpeed.value = remapSpeed(Number(value), 0.6);
         break;
-      case "count":
-        u.uCount.value = Number(value);
+      case "density":
+        u.uCount.value = remapDensity(Number(value), 36);
         break;
-      case "glow":
-        u.uGlow.value = Number(value);
+      case "intensity":
+        u.uGlow.value = remapIntensity(Number(value), 1.0);
         break;
       case "size":
-        u.uSize.value = Number(value);
+        u.uSize.value = remapSize(Number(value), 1.0);
         break;
       case "theme": {
         const p = paletteById(String(value));
@@ -134,12 +127,6 @@ export class Fireflies extends FullscreenScene {
         (u.uColorFly.value as THREE.Color).set(p.c);
         break;
       }
-      case "colorBg":
-        (u.uColorBg.value as THREE.Color).set(String(value));
-        break;
-      case "colorFly":
-        (u.uColorFly.value as THREE.Color).set(String(value));
-        break;
     }
   }
 }

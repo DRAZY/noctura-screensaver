@@ -1,7 +1,8 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue, Scene, SceneContext } from "../engine/types";
-import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
+import type { ParameterValue, Scene, SceneContext } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
 import { CURL_NOISE, SIMPLEX_3D } from "../engine/shaders/noise.glsl";
+import { NATIVE_PARAMETERS, remapSpeed, remapSize } from "../engine/sceneParams";
 
 /**
  * Flowing particles (Drift aesthetic): tens of thousands of luminous points
@@ -63,15 +64,7 @@ export class FlowingParticles implements Scene {
   readonly name = "Particle Drift";
   readonly description = "Luminous points streaming through a curl-noise flow.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 2.0, step: 0.01, default: 0.85 },
-    { kind: "range", id: "density", label: "Density", min: 0.1, max: 1.0, step: 0.01, default: 0.8 },
-    { kind: "range", id: "size", label: "Particle Size", min: 0.5, max: 8.0, step: 0.1, default: 3.4 },
-    { kind: "range", id: "scale", label: "Flow Scale", min: 0.3, max: 2.5, step: 0.05, default: 1.0 },
-    { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "synthwave" },
-    { kind: "color", id: "colorA", label: "Base Color", default: "#d91c8f" },
-    { kind: "color", id: "colorB", label: "Accent Color", default: "#2ec2eb" },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
@@ -149,16 +142,13 @@ export class FlowingParticles implements Scene {
     if (!u) return;
     switch (id) {
       case "speed":
-        u.uSpeed.value = Number(value);
+        u.uSpeed.value = remapSpeed(Number(value), 0.85);
         break;
       case "density":
-        this.geometry?.setDrawRange(0, Math.floor(MAX_PARTICLES * Number(value)));
+        this.geometry?.setDrawRange(0, Math.floor(MAX_PARTICLES * Math.min(Math.max(Number(value), 0), 1)));
         break;
       case "size":
-        u.uSize.value = Number(value);
-        break;
-      case "scale":
-        u.uScale.value = Number(value);
+        u.uSize.value = remapSize(Number(value), 3.4);
         break;
       case "theme": {
         const p = paletteById(String(value));
@@ -166,12 +156,6 @@ export class FlowingParticles implements Scene {
         (u.uColorB.value as THREE.Color).set(p.c);
         break;
       }
-      case "colorA":
-        (u.uColorA.value as THREE.Color).set(String(value));
-        break;
-      case "colorB":
-        (u.uColorB.value as THREE.Color).set(String(value));
-        break;
     }
   }
 

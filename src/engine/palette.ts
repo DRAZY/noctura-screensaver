@@ -17,7 +17,7 @@ export interface Palette {
 export const PALETTES: readonly Palette[] = [
   { id: "aurora", label: "Aurora", a: "#1a1240", b: "#c81e8a", c: "#f5a623" },
   { id: "borealis", label: "Borealis", a: "#051721", b: "#13c285", c: "#9ef26b" },
-  { id: "deepspace", label: "Deep Space", a: "#02030a", b: "#3a2f8f", c: "#8fb6ff" },
+  { id: "deepspace", label: "Deep Space", a: "#02030a", b: "#3a2f8f", c: "#cfe0ff" },
   { id: "ocean", label: "Ocean", a: "#030e2e", b: "#0c5ca3", c: "#6bd2e0" },
   { id: "ember", label: "Ember", a: "#1c0503", b: "#c73b0a", c: "#fad043" },
   { id: "synthwave", label: "Synthwave", a: "#170230", b: "#d91c8f", c: "#2ec2eb" },
@@ -27,7 +27,7 @@ export const PALETTES: readonly Palette[] = [
   { id: "gold", label: "Gold", a: "#140d02", b: "#b07d1a", c: "#ffe9a8" },
   { id: "ice", label: "Ice", a: "#040a14", b: "#3b6fae", c: "#e9f6ff" },
   { id: "rose", label: "Rose", a: "#1c0610", b: "#d6336c", c: "#ffd9c2" },
-  { id: "mono", label: "Monochrome", a: "#050506", b: "#616670", c: "#eaecf5" },
+  { id: "mono", label: "Monochrome", a: "#050506", b: "#616670", c: "#eaeff5" },
 ] as const;
 
 /** Options array ready to drop into a `SelectParameter`. */

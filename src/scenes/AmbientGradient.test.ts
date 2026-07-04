@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as THREE from "three";
 import { AmbientGradient, DEFAULT_SPEED, FRAGMENT_SHADER } from "./AmbientGradient";
 import { defaultsFor } from "../engine/types";
+import { NATIVE_DEFAULTS, remapSpeed } from "../engine/sceneParams";
 
 /** Cast helper to read the protected ShaderMaterial in tests. */
 function uniforms(scene: AmbientGradient) {
@@ -16,11 +17,13 @@ describe("AmbientGradient (Scene)", () => {
     expect(s.parameters.length).toBeGreaterThan(0);
   });
 
-  it("declares a speed range defaulting to DEFAULT_SPEED", () => {
+  it("declares the shared native Speed control (default = native)", () => {
     const s = new AmbientGradient();
     const speed = s.parameters.find((p) => p.id === "speed");
     expect(speed?.kind).toBe("range");
-    expect(defaultsFor(s).speed).toBe(DEFAULT_SPEED);
+    // Parity: every scene's Speed defaults to the native global default, not the
+    // scene's own internal tuning constant.
+    expect(defaultsFor(s).speed).toBe(NATIVE_DEFAULTS.speed);
   });
 
   it("builds a material on init with the expected uniforms", () => {
@@ -31,11 +34,13 @@ describe("AmbientGradient (Scene)", () => {
     expect(u.uSpeed.value).toBe(DEFAULT_SPEED);
   });
 
-  it("setParameter('speed') updates the uSpeed uniform", () => {
+  it("setParameter('speed') updates uSpeed via the native proportional remap", () => {
     const s = new AmbientGradient();
     s.init({ renderer: {} as THREE.WebGLRenderer, width: 1, height: 1 });
     s.setParameter("speed", 0.42);
-    expect(uniforms(s).uSpeed.value).toBeCloseTo(0.42);
+    // The native Speed knob is remapped onto the scene's uniform, anchored on the
+    // scene's own default so its tuned look is preserved at the native default.
+    expect(uniforms(s).uSpeed.value).toBeCloseTo(remapSpeed(0.42, DEFAULT_SPEED));
   });
 
   it("setParameter('theme') swaps all three palette colors", () => {

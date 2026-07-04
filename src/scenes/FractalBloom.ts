@@ -1,8 +1,9 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue } from "../engine/types";
-import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
+import type { ParameterValue } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
 import { DITHER } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
+import { NATIVE_PARAMETERS, remapSpeed, remapIntensity, remapSize } from "../engine/sceneParams";
 
 /**
  * Fractal Bloom — an animated Julia set. The seed point `c` orbits a circle of
@@ -93,15 +94,7 @@ export class FractalBloom extends FullscreenScene {
   readonly name = "Fractal Bloom";
   readonly description = "An animated Julia set, endlessly folding and reblooming.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 1.5, step: 0.01, default: DEFAULT_SPEED },
-    { kind: "range", id: "scale", label: "Zoom", min: 0.6, max: 2.0, step: 0.01, default: DEFAULT_SCALE },
-    { kind: "range", id: "intensity", label: "Bloom", min: 0.0, max: 1.5, step: 0.01, default: DEFAULT_INTENSITY },
-    { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "aurora" },
-    { kind: "color", id: "colorA", label: "Color A", default: "#1a1240" },
-    { kind: "color", id: "colorB", label: "Color B", default: "#c81e8a" },
-    { kind: "color", id: "colorC", label: "Color C", default: "#f5a623" },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   protected createMaterial(): THREE.ShaderMaterial {
     const p = paletteById("aurora");
@@ -127,13 +120,13 @@ export class FractalBloom extends FullscreenScene {
     const u = this.material.uniforms;
     switch (id) {
       case "speed":
-        u.uSpeed.value = Number(value);
+        u.uSpeed.value = remapSpeed(Number(value), 0.5);
         break;
-      case "scale":
-        u.uScale.value = Number(value);
+      case "size":
+        u.uScale.value = remapSize(Number(value), 1.0);
         break;
       case "intensity":
-        u.uIntensity.value = Number(value);
+        u.uIntensity.value = remapIntensity(Number(value), 1.0);
         break;
       case "theme": {
         const p = paletteById(String(value));
@@ -142,15 +135,6 @@ export class FractalBloom extends FullscreenScene {
         (u.uColorC.value as THREE.Color).set(p.c);
         break;
       }
-      case "colorA":
-        (u.uColorA.value as THREE.Color).set(String(value));
-        break;
-      case "colorB":
-        (u.uColorB.value as THREE.Color).set(String(value));
-        break;
-      case "colorC":
-        (u.uColorC.value as THREE.Color).set(String(value));
-        break;
     }
   }
 }

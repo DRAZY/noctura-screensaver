@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue } from "../engine/types";
-import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
+import type { ParameterValue } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
+import { NATIVE_PARAMETERS, remapSpeed, remapSize } from "../engine/sceneParams";
 import { DITHER, FBM_2D, SIMPLEX_2D } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
 
@@ -81,14 +82,7 @@ export class Tunnel extends FullscreenScene {
   readonly name = "Hyperspace Tunnel";
   readonly description = "An infinite flight down a spiraling light tunnel.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.1, max: 2.5, step: 0.05, default: DEFAULT_SPEED },
-    { kind: "range", id: "twist", label: "Twist", min: 0.0, max: 3.0, step: 0.05, default: DEFAULT_TWIST },
-    { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "deepspace" },
-    { kind: "color", id: "colorA", label: "Color A", default: "#02030a" },
-    { kind: "color", id: "colorB", label: "Color B", default: "#3a2f8f" },
-    { kind: "color", id: "colorC", label: "Color C", default: "#8fb6ff" },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   protected createMaterial(): THREE.ShaderMaterial {
     const p = paletteById("deepspace");
@@ -113,10 +107,10 @@ export class Tunnel extends FullscreenScene {
     const u = this.material.uniforms;
     switch (id) {
       case "speed":
-        u.uSpeed.value = Number(value);
+        u.uSpeed.value = remapSpeed(Number(value), 0.7);
         break;
-      case "twist":
-        u.uTwist.value = Number(value);
+      case "size":
+        u.uTwist.value = remapSize(Number(value), 1.0);
         break;
       case "theme": {
         const p = paletteById(String(value));
@@ -125,15 +119,6 @@ export class Tunnel extends FullscreenScene {
         (u.uColorC.value as THREE.Color).set(p.c);
         break;
       }
-      case "colorA":
-        (u.uColorA.value as THREE.Color).set(String(value));
-        break;
-      case "colorB":
-        (u.uColorB.value as THREE.Color).set(String(value));
-        break;
-      case "colorC":
-        (u.uColorC.value as THREE.Color).set(String(value));
-        break;
     }
   }
 }

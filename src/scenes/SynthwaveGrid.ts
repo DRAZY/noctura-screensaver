@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue } from "../engine/types";
-import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
+import type { ParameterValue } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
+import { NATIVE_PARAMETERS, remapSpeed } from "../engine/sceneParams";
 import { FullscreenScene } from "./FullscreenScene";
 
 /**
@@ -88,13 +89,7 @@ export class SynthwaveGrid extends FullscreenScene {
   readonly name = "Synthwave";
   readonly description = "Neon outrun grid racing toward a banded retro sun.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 2.0, step: 0.05, default: DEFAULT_SPEED },
-    { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "synthwave" },
-    { kind: "color", id: "sky", label: "Sky", default: "#170230" },
-    { kind: "color", id: "sun", label: "Sun", default: "#ff5ea0" },
-    { kind: "color", id: "grid", label: "Grid", default: "#2ec2eb" },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   protected createMaterial(): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
@@ -117,7 +112,7 @@ export class SynthwaveGrid extends FullscreenScene {
     const u = this.material.uniforms;
     switch (id) {
       case "speed":
-        u.uSpeed.value = Number(value);
+        u.uSpeed.value = remapSpeed(Number(value), 0.5);
         break;
       case "theme": {
         const p = paletteById(String(value));
@@ -126,15 +121,6 @@ export class SynthwaveGrid extends FullscreenScene {
         (u.uGrid.value as THREE.Color).set(p.c);
         break;
       }
-      case "sky":
-        (u.uSky.value as THREE.Color).set(String(value));
-        break;
-      case "sun":
-        (u.uSun.value as THREE.Color).set(String(value));
-        break;
-      case "grid":
-        (u.uGrid.value as THREE.Color).set(String(value));
-        break;
     }
   }
 }

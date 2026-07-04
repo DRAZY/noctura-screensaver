@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue } from "../engine/types";
-import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
+import type { ParameterValue } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
+import { NATIVE_PARAMETERS, remapSpeed, remapIntensity, remapSize } from "../engine/sceneParams";
 import { SIMPLEX_2D, DITHER } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
 
@@ -100,15 +101,7 @@ export class LiquidChrome extends FullscreenScene {
   readonly name = "Liquid Chrome";
   readonly description = "Flowing molten mercury under crisp studio light.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 1.2, step: 0.01, default: DEFAULT_SPEED },
-    { kind: "range", id: "scale", label: "Scale", min: 0.6, max: 3.0, step: 0.05, default: DEFAULT_SCALE },
-    { kind: "range", id: "intensity", label: "Shine", min: 0.0, max: 1.5, step: 0.01, default: DEFAULT_INTENSITY },
-    { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "ice" },
-    { kind: "color", id: "colorA", label: "Color A", default: "#0a0f1a" },
-    { kind: "color", id: "colorB", label: "Color B", default: "#6f8fc0" },
-    { kind: "color", id: "colorC", label: "Color C", default: "#dbe9ff" },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   protected createMaterial(): THREE.ShaderMaterial {
     const p = paletteById("ice");
@@ -134,13 +127,13 @@ export class LiquidChrome extends FullscreenScene {
     const u = this.material.uniforms;
     switch (id) {
       case "speed":
-        u.uSpeed.value = Number(value);
+        u.uSpeed.value = remapSpeed(Number(value), DEFAULT_SPEED);
         break;
-      case "scale":
-        u.uScale.value = Number(value);
+      case "size":
+        u.uScale.value = remapSize(Number(value), DEFAULT_SCALE);
         break;
       case "intensity":
-        u.uIntensity.value = Number(value);
+        u.uIntensity.value = remapIntensity(Number(value), DEFAULT_INTENSITY);
         break;
       case "theme": {
         const p = paletteById(String(value));
@@ -149,15 +142,6 @@ export class LiquidChrome extends FullscreenScene {
         (u.uColorC.value as THREE.Color).set(p.c);
         break;
       }
-      case "colorA":
-        (u.uColorA.value as THREE.Color).set(String(value));
-        break;
-      case "colorB":
-        (u.uColorB.value as THREE.Color).set(String(value));
-        break;
-      case "colorC":
-        (u.uColorC.value as THREE.Color).set(String(value));
-        break;
     }
   }
 }

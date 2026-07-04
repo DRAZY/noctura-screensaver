@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue, Scene, SceneContext } from "../engine/types";
-import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
+import type { ParameterValue, Scene, SceneContext } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
+import { NATIVE_PARAMETERS, remapSize } from "../engine/sceneParams";
 
 /**
  * Polar Clock: concentric animated arcs for seconds, minutes, hours, day, and
@@ -82,16 +83,7 @@ export class PolarClock implements Scene {
   readonly name = "Polar Clock";
   readonly description = "Concentric arcs tracking seconds → months in real time.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "thickness", label: "Ring Thickness", min: 0.01, max: 0.06, step: 0.005, default: 0.03 },
-    { kind: "select", id: "ticks", label: "Hour Ticks", options: [
-      { value: "on", label: "On" },
-      { value: "off", label: "Off" },
-    ], default: "on" },
-    { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: "ocean" },
-    { kind: "color", id: "arc", label: "Arc Color", default: "#6bd2e0" },
-    { kind: "color", id: "track", label: "Track Color", default: "#0c5ca3" },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -144,11 +136,8 @@ export class PolarClock implements Scene {
     const u = this.material?.uniforms;
     if (!u) return;
     switch (id) {
-      case "thickness":
-        u.uThickness.value = Number(value);
-        break;
-      case "ticks":
-        u.uTicks.value = value === "on" ? 1 : 0;
+      case "size":
+        u.uThickness.value = remapSize(Number(value), 0.03);
         break;
       case "theme": {
         const p = paletteById(String(value));
@@ -157,12 +146,6 @@ export class PolarClock implements Scene {
         (u.uArc.value as THREE.Color).set(p.c);
         break;
       }
-      case "arc":
-        (u.uArc.value as THREE.Color).set(String(value));
-        break;
-      case "track":
-        (u.uTrack.value as THREE.Color).set(String(value));
-        break;
     }
   }
 

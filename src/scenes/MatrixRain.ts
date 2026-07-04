@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import type { Parameter, ParameterValue } from "../engine/types";
-import { hexToColor } from "../engine/palette";
+import type { ParameterValue } from "../engine/types";
+import { hexToColor, paletteById } from "../engine/palette";
+import { NATIVE_PARAMETERS, remapSpeed, remapDensity, remapSize } from "../engine/sceneParams";
 import { FullscreenScene } from "./FullscreenScene";
 
 /**
@@ -136,13 +137,7 @@ export class MatrixRain extends FullscreenScene {
   readonly name = "Matrix Rain";
   readonly description = "Cascading digital glyphs — the iconic green rain.";
 
-  readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.2, max: 3.0, step: 0.05, default: DEFAULT_SPEED },
-    { kind: "range", id: "density", label: "Density", min: 0.0, max: 1.0, step: 0.01, default: DEFAULT_DENSITY },
-    { kind: "range", id: "size", label: "Glyph Size", min: 0.4, max: 2.2, step: 0.05, default: DEFAULT_SIZE },
-    { kind: "color", id: "colorHead", label: "Head", default: "#d9ffe0" },
-    { kind: "color", id: "colorTrail", label: "Trail", default: "#1bff6b" },
-  ];
+  readonly parameters = NATIVE_PARAMETERS;
 
   protected createMaterial(): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
@@ -166,20 +161,20 @@ export class MatrixRain extends FullscreenScene {
     const u = this.material.uniforms;
     switch (id) {
       case "speed":
-        u.uSpeed.value = Number(value);
+        u.uSpeed.value = remapSpeed(Number(value), DEFAULT_SPEED);
         break;
       case "density":
-        u.uDensity.value = Number(value);
+        u.uDensity.value = remapDensity(Number(value), DEFAULT_DENSITY);
         break;
       case "size":
-        u.uSize.value = Number(value);
+        u.uSize.value = remapSize(Number(value), DEFAULT_SIZE);
         break;
-      case "colorHead":
-        (u.uColorHead.value as THREE.Color).set(String(value));
+      case "theme": {
+        const p = paletteById(String(value));
+        (u.uColorHead.value as THREE.Color).set(p.c);
+        (u.uColorTrail.value as THREE.Color).set(p.b);
         break;
-      case "colorTrail":
-        (u.uColorTrail.value as THREE.Color).set(String(value));
-        break;
+      }
     }
   }
 }
