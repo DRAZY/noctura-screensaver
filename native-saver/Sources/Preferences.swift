@@ -27,7 +27,7 @@ struct AuroraScene {
         AuroraScene(name: "Liquid Chrome"),
         AuroraScene(name: "Nebula Drift"),
         AuroraScene(name: "Fractal Bloom"),
-        AuroraScene(name: "Drift"),
+        AuroraScene(name: "Flux Drift"),
     ]
 }
 

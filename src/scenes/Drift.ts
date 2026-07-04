@@ -155,7 +155,7 @@ const DRIFT_C = "#3b7bf5"; // blue
 
 export class Drift extends FullscreenScene {
   readonly id = "drift";
-  readonly name = "Drift";
+  readonly name = "Flux Drift";
   readonly description = "Dashes of light combed around slow vortices — the macOS Drift look.";
 
   readonly parameters: ReadonlyArray<Parameter> = [

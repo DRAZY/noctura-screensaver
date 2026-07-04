@@ -15,7 +15,7 @@ pub const SCENES: [&str; 17] = [
     "Aurora Drift", "Northern Lights", "Deep Space", "Particle Drift", "Plasma Field",
     "Matrix Rain", "Fireflies", "Black Hole", "Hyperspace Tunnel", "Synthwave",
     "Kaleidoscope", "Caustics", "Polar Clock", "Liquid Chrome", "Nebula Drift",
-    "Fractal Bloom", "Drift",
+    "Fractal Bloom", "Flux Drift",
 ];
 
 /// A three-stop color palette the scenes blend between.
