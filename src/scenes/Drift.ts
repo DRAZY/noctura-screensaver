@@ -28,9 +28,10 @@ precision highp float;
 varying vec2 vUv;
 uniform float uTime;
 uniform float uSpeed;
-uniform float uScale;    // swirl size (smaller = larger, lazier vortices)
-uniform float uStrands;  // number of combed strands
-uniform float uGlow;     // streak brightness
+uniform float uFlow;     // swirl scale (bigger = smaller, tighter vortices)
+uniform float uGrid;     // dash density (cells across the field)
+uniform float uDash;     // dash length multiplier
+uniform float uGlow;     // dash brightness
 uniform vec2  uResolution;
 uniform vec3  uColorA;
 uniform vec3  uColorB;
@@ -40,11 +41,6 @@ uniform vec3  uSky;      // near-black background
 ${SIMPLEX_2D}
 ${DITHER}
 
-// Number of Line-Integral-Convolution steps taken in EACH flow direction. The
-// substance noise is smeared this many taps forward and backward along the flow,
-// which is what turns isolated speckles into combed, flow-aligned streaks.
-#define LIC_STEPS 9
-
 // Smooth A->B->C->A cycle so the big color regions braid through all three stops.
 vec3 ncCyc(float x) {
   float f = fract(x);
@@ -53,93 +49,96 @@ vec3 ncCyc(float x) {
   return mix(uColorC, uColorA, (f - 0.6666) / 0.3334);
 }
 
-// Single-octave simplex is a smooth, low-frequency potential at these scales — the
-// flow direction is its gradient rotated 90 degrees, giving long lazy vortices
-// (contour-band methods ring into moiré at vortex centers; LIC does not).
+float hash21(vec2 p) {
+  p = fract(p * vec2(123.34, 345.45));
+  p += dot(p, p + 34.345);
+  return fract(p.x * p.y);
+}
+
+// Unit flow direction at position x: the gradient of a smooth low-frequency
+// potential rotated 90 degrees → long lazy vortices. A gentle global bias keeps
+// the combing laminar and dissolves the radial singularities at critical points.
 vec2 flowDir(vec2 x) {
-  x *= 0.62; // low frequency → big, lazy vortices (fewer critical points)
-  float e = 0.012;
+  x *= 0.6;
+  float e = 0.015;
   float n0 = snoise(x);
   float nx = snoise(x + vec2(e, 0.0)) - n0;
   float ny = snoise(x + vec2(0.0, e)) - n0;
-  vec2 tang = vec2(-ny, nx);             // 90 degrees from gradient = along-flow
-  tang = tang / (length(tang) + 1e-4);   // unit tangent
-  // A gentle global drift bias makes the combing laminar and — because it
-  // dominates exactly where the gradient vanishes — dissolves the radial
-  // "starburst" singularities that a pure noise-curl field produces.
-  tang += vec2(0.5, 0.18) * 0.32;
+  vec2 tang = vec2(-ny, nx);
+  tang = tang / (length(tang) + 1e-4);
+  tang += vec2(0.55, 0.2) * 0.28;
   return normalize(tang);
-}
-
-// The "ink" the flow combs: sparse high-frequency speckles. LIC stretches each
-// speckle along the local flow into a short dash, and the gaps between speckles
-// become the gaps between dashes.
-float substance(vec2 x) {
-  float n = snoise(x * uStrands * 0.5);
-  return smoothstep(-0.25, 0.65, n);
 }
 
 void main() {
   float aspect = uResolution.x / max(uResolution.y, 1.0);
+  // Aspect-corrected square space so dashes are round-thin, not stretched.
   vec2 uv = vec2((vUv.x - 0.5) * aspect, vUv.y - 0.5);
   float t = uTime * uSpeed;
-  vec2 p = uv * uScale;
 
-  // Slow evolving domain warp so the whole flow field breathes and drifts.
-  vec2 pw = p + 0.4 * vec2(
-    snoise(p * 0.4 + vec2(0.0, t * 0.06)),
-    snoise(p * 0.4 + vec2(5.0, -t * 0.05))
-  );
-  // A gentle along-flow scroll so the dashes stream rather than merely morph.
-  vec2 drift = flowDir(pw) * (t * 0.12);
+  // Dash grid in uv space. We visit the 3x3 neighbourhood so a dash whose body
+  // crosses a cell border is still drawn on the neighbouring pixels.
+  vec2 g = uv * uGrid;
+  vec2 baseCell = floor(g);
 
-  // Line Integral Convolution: average the substance along the flow line through
-  // this pixel, weighting the center most. The result is a streak tangent to the
-  // flow — the brushed/combed look, free of the banding moiré.
-  float stepLen = 0.035;
-  float acc = 0.0, wsum = 0.0;
-  vec2 pos = pw;
-  for (int i = 0; i < LIC_STEPS; i++) {
-    float w = 1.0 - float(i) / float(LIC_STEPS);
-    acc += substance(pos + drift) * w;
-    wsum += w;
-    pos += flowDir(pos) * stepLen;
+  float dashHalf = (0.34 / uGrid) * uDash; // half length of a dash, uv units
+  float dashThick = 0.14 / uGrid;          // half thickness of a dash, uv units
+
+  // Every dash must stay within the sampled 3x3 neighbourhood or its body gets
+  // clipped at a cell edge — which reads as a grid overlay. So the total off-
+  // centre displacement (jitter + along-flow drift) plus the dash's own reach is
+  // kept under one cell: dashHalf(0.34)+dashThick(0.12)+maxDisp(~0.52) < 1.0.
+  float lit = 0.0;
+  for (int j = -1; j <= 1; j++) {
+    for (int i = -1; i <= 1; i++) {
+      vec2 cell = baseCell + vec2(float(i), float(j));
+      float r = hash21(cell);
+      float r2 = hash21(cell + 7.31);
+      vec2 center = (cell + 0.5) / uGrid;         // cell centre in uv space
+      vec2 dir = flowDir(center * uFlow);          // orient along local flow
+      vec2 perp = vec2(-dir.y, dir.x);
+      // Jitter off the lattice (mostly across-flow) so no rigid rows show.
+      center += (perp * (r - 0.5) * 0.5 + dir * (r2 - 0.5) * 0.25) / uGrid;
+      // Each dash streams part of a cell along the flow over its life, then loops;
+      // a per-cell phase staggers them so the field shimmers, never pulses.
+      float life = fract(r * 13.0 + t * 0.7);
+      center += dir * ((life - 0.5) * 0.55) / uGrid;
+      // Fade in and out over life so dashes twinkle in rather than pop.
+      float fade = smoothstep(0.0, 0.18, life) * smoothstep(1.0, 0.7, life);
+
+      // Distance to the oriented capsule (rounded line segment) = one dash.
+      vec2 rel = uv - center;
+      float along = dot(rel, dir);
+      float across = dot(rel, perp);
+      float d = length(vec2(max(abs(along) - dashHalf, 0.0), across));
+      // Fixed-width soft edge. NOT fwidth(d): d is per-cell and jumps across cell
+      // boundaries, so fwidth(d) spikes there and paints a grid. The smoothstep
+      // band itself (0.35..1.0 of the thickness) gives ~1px anti-aliasing.
+      float m = smoothstep(dashThick, dashThick * 0.35, d);
+      lit = max(lit, m * (0.5 + 0.5 * r)); // per-dash brightness variation
+    }
   }
-  pos = pw;
-  for (int i = 0; i < LIC_STEPS; i++) {
-    pos -= flowDir(pos) * stepLen;
-    float w = 1.0 - float(i) / float(LIC_STEPS);
-    acc += substance(pos + drift) * w;
-    wsum += w;
-  }
-  float streak = acc / wsum;
-  // Sharpen the smeared average back into crisp dashes with clean black gaps.
-  streak = smoothstep(0.22, 0.62, streak);
 
-  // Large-scale coverage → big soft regions rest toward black (negative space),
-  // but leave most of the frame combed like the reference.
-  float cover = snoise(p * 0.45 + vec2(9.0, -t * 0.03));
-  streak *= smoothstep(-0.7, 0.35, cover);
-
-  // Large-scale color regions, palette-cycled and slowly evolving: a few big soft
-  // colored zones (magenta / green / blue in the reference), not per-strand color.
-  float creg = snoise(p * 0.32 + 3.0) * 0.5 + 0.5;
+  // Large-scale colour regions (big magenta / green / blue zones like the
+  // reference), palette-cycled and drifting slowly — colour is by position, not
+  // per dash, so neighbouring dashes share a hue and read as one region.
+  float creg = snoise(uv * uFlow * 0.28 + 3.0) * 0.5 + 0.5;
   vec3 col = ncCyc(creg + 0.03 * t);
 
-  vec3 outc = uSky + col * streak * uGlow;
-  // Soft tone curve + vignette so bright streaks bloom without clipping.
-  float vig = 1.0 - 0.28 * dot(vUv - 0.5, vUv - 0.5);
+  vec3 outc = uSky + col * lit * uGlow;
+  float vig = 1.0 - 0.26 * dot(vUv - 0.5, vUv - 0.5);
   outc *= vig;
-  outc = outc / (outc + 0.7);
-  outc = pow(outc, vec3(0.82));
+  outc = outc / (outc + 0.75);
+  outc = pow(outc, vec3(0.85));
   gl_FragColor = vec4(outc + dither(gl_FragCoord.xy), 1.0);
 }
 `;
 
 const DEFAULT_THEME = "nebula";
-const DEFAULT_SCALE = 1.9;
-const DEFAULT_STRANDS = 30;
-const DEFAULT_GLOW = 1.9;
+const DEFAULT_FLOW = 2.4;   // swirl scale
+const DEFAULT_GRID = 52;    // dashes across the field
+const DEFAULT_DASH = 1.1;   // dash length
+const DEFAULT_GLOW = 1.7;
 // Drift's signature is multi-hue (magenta / green / blue), so the default color
 // stops are a vibrant triad rather than a single-hue palette. Picking a Theme in
 // the UI overrides these with that palette's stops.
@@ -154,9 +153,10 @@ export class Drift extends FullscreenScene {
 
   readonly parameters: ReadonlyArray<Parameter> = [
     { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 1.5, step: 0.01, default: 0.4 },
-    { kind: "range", id: "scale", label: "Swirl Scale", min: 1.5, max: 6.0, step: 0.1, default: DEFAULT_SCALE },
-    { kind: "range", id: "density", label: "Strands", min: 24, max: 90, step: 1, default: DEFAULT_STRANDS },
-    { kind: "range", id: "glow", label: "Glow", min: 0.4, max: 2.2, step: 0.05, default: DEFAULT_GLOW },
+    { kind: "range", id: "scale", label: "Swirl Scale", min: 1.2, max: 5.0, step: 0.1, default: DEFAULT_FLOW },
+    { kind: "range", id: "density", label: "Density", min: 32, max: 96, step: 1, default: DEFAULT_GRID },
+    { kind: "range", id: "dash", label: "Dash Length", min: 0.5, max: 1.8, step: 0.05, default: DEFAULT_DASH },
+    { kind: "range", id: "glow", label: "Glow", min: 0.4, max: 2.4, step: 0.05, default: DEFAULT_GLOW },
     { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: DEFAULT_THEME },
     { kind: "color", id: "colorA", label: "Color A", default: DRIFT_A },
     { kind: "color", id: "colorB", label: "Color B", default: DRIFT_B },
@@ -172,8 +172,9 @@ export class Drift extends FullscreenScene {
       uniforms: {
         uTime: { value: 0 },
         uSpeed: { value: 0.4 },
-        uScale: { value: DEFAULT_SCALE },
-        uStrands: { value: DEFAULT_STRANDS },
+        uFlow: { value: DEFAULT_FLOW },
+        uGrid: { value: DEFAULT_GRID },
+        uDash: { value: DEFAULT_DASH },
         uGlow: { value: DEFAULT_GLOW },
         uResolution: { value: new THREE.Vector2(1, 1) },
         uColorA: { value: hexToColor(DRIFT_A) },
@@ -191,10 +192,13 @@ export class Drift extends FullscreenScene {
         u.uSpeed.value = Number(value);
         break;
       case "scale":
-        u.uScale.value = Number(value);
+        u.uFlow.value = Number(value);
         break;
       case "density":
-        u.uStrands.value = Number(value);
+        u.uGrid.value = Number(value);
+        break;
+      case "dash":
+        u.uDash.value = Number(value);
         break;
       case "glow":
         u.uGlow.value = Number(value);
