@@ -1,6 +1,7 @@
 import AppKit
 import IOKit.ps
 import Metal
+import ObjectiveC
 import QuartzCore
 import ScreenSaver
 
@@ -464,18 +465,27 @@ final class AuroraView: ScreenSaverView {
     override var hasConfigureSheet: Bool { true }
 
     override var configureSheet: NSWindow? {
-        // Return a BRAND-NEW window every call. The intermittent "Options does
-        // nothing after switching scenes" bug came from reusing one shared window
-        // across present/dismiss cycles: its sheet/visibility state entangles with
-        // System Settings' own sheet bookkeeping, and once the two disagree the
-        // host silently refuses to begin a sheet on it until the whole Settings
-        // process is relaunched. A freshly-built window carries zero residual
-        // state, so `beginSheet` on it always succeeds. `installFresh` retires and
-        // releases any prior controller and keeps exactly one alive, so button
-        // targets never dangle and nothing is released mid-present. The getter is
-        // deliberately trivial (no mutation that could partially fail).
-        AuroraConfigController.installFresh(for: self)
-        return AuroraConfigController.current?.window
+        // Build a BRAND-NEW controller + window every call, and tie the
+        // controller's lifetime to that window (associated object) — NOT to any
+        // process-wide static. This is the crux of the long-standing "Options does
+        // nothing after clicking Done / switching scenes" bug:
+        //
+        //   * A reused window carries residual sheet/visibility state that
+        //     entangles with System Settings' own sheet bookkeeping; once they
+        //     disagree the host silently refuses beginSheet until Settings is
+        //     relaunched.
+        //   * A persistent static controller keeps stale state alive across the
+        //     host tearing down and recreating the preview view (which is exactly
+        //     what "Done" then reopening does), so the next present starts dirty.
+        //
+        // Tying the controller to the window means: the host retains the window
+        // for the duration of its sheet, the controller lives exactly that long,
+        // and when the host drops the window BOTH are released. Zero global state
+        // survives between presentations, so every Options click starts pristine.
+        let controller = AuroraConfigController(view: self)
+        objc_setAssociatedObject(controller.window, &AuroraConfigController.assocKey,
+                                 controller, .OBJC_ASSOCIATION_RETAIN)
+        return controller.window
     }
 
     /// Re-read settings after the Options sheet closes so a still-running preview
@@ -497,20 +507,9 @@ final class AuroraView: ScreenSaverView {
 /// same knobs popular screensavers offer, and persists them through
 /// `AuroraPreferences`.
 final class AuroraConfigController: NSObject {
-    /// The single controller currently alive. Each `configureSheet` call retires
-    /// the previous one and installs a fresh controller here, so at most one
-    /// Options window exists at a time and its button targets can never dangle
-    /// (the strong static holds it for its whole present/dismiss lifetime). This
-    /// replaces the old process-wide singleton whose *reused* window was the
-    /// source of the intermittent "Options won't open" failure.
-    static private(set) var current: AuroraConfigController?
-
-    /// Retire any prior controller and install a brand-new one bound to `view`.
-    /// The new controller builds a fresh, pristine window — the crux of the fix.
-    static func installFresh(for view: AuroraView) {
-        current?.retire()
-        current = AuroraConfigController(view: view)
-    }
+    /// Key for the objc associated object that ties a controller's lifetime to
+    /// its window. No value; only its address is used as the association key.
+    static var assocKey: UInt8 = 0
 
     let window: NSWindow
     /// The view that vended this sheet; settings are read/written through it so
@@ -530,8 +529,10 @@ final class AuroraConfigController: NSObject {
     private let clock24hCheckbox = NSButton(checkboxWithTitle: "24-hour clock", target: nil, action: nil)
 
     /// Build a fresh Options window bound to `view` and seed its controls. Every
-    /// present gets one of these — never a reused window.
-    private init(view: AuroraView) {
+    /// present gets one of these — never a reused window. The window retains this
+    /// controller via an associated object (set by the caller), so the controller
+    /// lives exactly as long as the window and dies when the host releases it.
+    init(view: AuroraView) {
         self.currentView = view
         self.window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 380, height: 604),
@@ -540,21 +541,12 @@ final class AuroraConfigController: NSObject {
             defer: false
         )
         super.init()
-        // We own the window's lifetime via the `current` static; disabling
-        // release-on-close means our explicit close()/retire() can't over-release
-        // it out from under the host.
+        // Keep release-on-close off so our explicit close() in dismiss() only
+        // ends the presentation; the associated object then drops the last strong
+        // reference and ARC deallocates both window and controller together.
         window.isReleasedWhenClosed = false
         buildUI()
         refreshFromPreferences()
-    }
-
-    /// Tear down cleanly before this controller is released: end any presentation
-    /// so the host drops its reference, then close. Safe to call whether or not
-    /// the window was ever presented.
-    private func retire() {
-        if let parent = window.sheetParent { parent.endSheet(window) }
-        if window.isVisible { window.orderOut(nil) }
-        window.close()
     }
 
     private var preferences: AuroraPreferences? { currentView?.preferences }
@@ -670,16 +662,22 @@ final class AuroraConfigController: NSObject {
     }
 
     private func dismiss() {
-        // End the sheet and close this (single-use) window, then let the live view
-        // re-read settings so a running preview reflects the change immediately.
-        // We intentionally leave `current` pointing at this now-closed controller
-        // until the next Options click replaces it — dropping the strong ref here
-        // could deallocate self while this button-action method is still on the
-        // stack. The next `installFresh` retires + releases it cleanly.
-        if let parent = window.sheetParent {
-            parent.endSheet(window)
+        // End the sheet so the host drops the window, let the live view re-read
+        // settings, then release ourselves by clearing the associated object.
+        // Deferred to the next runloop tick so `self` (this button-action target)
+        // isn't deallocated while this method is still on the stack.
+        let win = window
+        let view = currentView
+        if let parent = win.sheetParent {
+            parent.endSheet(win)
         }
-        window.close()
-        currentView?.reloadFromPreferences()
+        win.orderOut(nil)
+        view?.reloadFromPreferences()
+        DispatchQueue.main.async {
+            // Drops the last strong reference (the associated object) → ARC frees
+            // this controller and its window together. Nothing persists to go stale.
+            objc_setAssociatedObject(win, &AuroraConfigController.assocKey, nil, .OBJC_ASSOCIATION_RETAIN)
+            win.close()
+        }
     }
 }

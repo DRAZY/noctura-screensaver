@@ -29,6 +29,10 @@ const SWATCH: Record<string, string> = {
   kaleidoscope: "linear-gradient(135deg, #0a0418, #7b2ff7 55%, #f76fd4)",
   caustics: "linear-gradient(135deg, #021a2b, #0b6e8c 55%, #9ff5ff)",
   "polar-clock": "linear-gradient(135deg, #030e2e, #0c5ca3 55%, #6bd2e0)",
+  liquidchrome: "linear-gradient(135deg, #0a0f1a, #6f8fc0 55%, #dbe9ff)",
+  nebula: "linear-gradient(135deg, #0a0418, #3a6ff7 55%, #f76fd4)",
+  fractalbloom: "linear-gradient(135deg, #0a0418, #c81e8a 55%, #f5a623)",
+  drift: "linear-gradient(135deg, #04030a, #e01e8f 45%, #22c55e 72%, #3b7bf5)",
 };
 
 export function ScenePicker({ scenes, activeId, favorites, onSelect, onToggleFavorite }: ScenePickerProps) {
