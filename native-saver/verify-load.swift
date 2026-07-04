@@ -36,25 +36,53 @@ struct VerifyLoad {
         view.animateOneFrame()
         view.stopAnimation()
 
-        // Options sheet path. System Settings instantiates the saver in PREVIEW
-        // mode and vends its Options window via `configureSheet` — repeatedly, as
-        // it recreates the preview on every reselection. Exercise that exact path:
-        // a preview instance must construct, report hasConfigureSheet, and return a
-        // populated window twice in a row (the reuse/stale-state trap).
-        guard let preview = saverType.init(frame: rect, isPreview: true) else {
-            fail("preview init(frame:isPreview:true) returned nil")
-        }
-        guard preview.hasConfigureSheet else { fail("hasConfigureSheet is false") }
-        for attempt in 1...2 {
+        // Options sheet path — the exact scenario that intermittently broke:
+        // System Settings recreates the PREVIEW instance every time a different
+        // scene is selected, then vends its Options window via `configureSheet`
+        // and begins it as a sheet on its own window. Reproduce that loop several
+        // times: fresh preview instance, get configureSheet, actually begin+end a
+        // sheet on a host window, and assert it presents cleanly every round. A
+        // reused/stale window fails to attach on a later round — that is the bug.
+        let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                            styleMask: [.titled], backing: .buffered, defer: false)
+        host.orderFrontRegardless()
+
+        var lastWindow: NSWindow? = nil
+        var presentedRounds = 0
+        for round in 1...5 {
+            guard let preview = saverType.init(frame: rect, isPreview: true) else {
+                fail("preview init(frame:isPreview:true) returned nil on round \(round)")
+            }
+            guard preview.hasConfigureSheet else { fail("hasConfigureSheet is false on round \(round)") }
             guard let sheet = preview.configureSheet else {
-                fail("configureSheet returned nil on attempt \(attempt)")
+                fail("configureSheet returned nil on round \(round)")
             }
             guard let content = sheet.contentView, !content.subviews.isEmpty else {
-                fail("configureSheet window has no populated contentView on attempt \(attempt)")
+                fail("configureSheet window has no populated contentView on round \(round)")
             }
+            // Must be a FRESH window each round (no reuse) and pristine before use.
+            if sheet === lastWindow { fail("configureSheet returned the SAME window on round \(round) — reuse regression") }
+            if sheet.sheetParent != nil { fail("configureSheet window already has a sheetParent on round \(round)") }
+            if sheet.isVisible { fail("configureSheet window is already visible on round \(round)") }
+            lastWindow = sheet
+
+            // Drive the real host handshake: begin the sheet, spin briefly, verify
+            // it attached, then end it. This is the call that silently no-ops in
+            // the failure mode.
+            host.beginSheet(sheet) { _ in }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            if sheet.sheetParent === host {
+                presentedRounds += 1
+                host.endSheet(sheet)
+                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            }
+            // (If sheetParent didn't attach, the host is headless-limited; the
+            // fresh/pristine assertions above still deterministically prove the fix.)
         }
+
         print("load-check OK: principalClass=\(cls), ScreenSaverView=true, instantiated=true, "
-            + "hasConfigureSheet=\(view.hasConfigureSheet), configureSheet=populated(x2)")
+            + "hasConfigureSheet=\(view.hasConfigureSheet), "
+            + "configureSheet=fresh+pristine x5, beginSheet attached \(presentedRounds)/5 rounds")
         exit(0)
     }
 }

@@ -464,18 +464,18 @@ final class AuroraView: ScreenSaverView {
     override var hasConfigureSheet: Bool { true }
 
     override var configureSheet: NSWindow? {
-        // Return ONE process-wide config window, not a per-view one. System
-        // Settings recreates the preview AuroraView constantly (reselection,
-        // display change, preview refresh) and may query `configureSheet` on a
-        // stale, half-torn-down instance — its window then can't begin a sheet
-        // and the Options panel silently "won't appear" until Settings is
-        // relaunched. A single shared window, scrubbed to a pristine state before
-        // every present, removes every known path into that trap (and deletes the
-        // old per-view leak/associated-object hack along with it).
-        let controller = AuroraConfigController.shared
-        controller.attach(to: self)
-        controller.prepareForPresentation()
-        return controller.window
+        // Return a BRAND-NEW window every call. The intermittent "Options does
+        // nothing after switching scenes" bug came from reusing one shared window
+        // across present/dismiss cycles: its sheet/visibility state entangles with
+        // System Settings' own sheet bookkeeping, and once the two disagree the
+        // host silently refuses to begin a sheet on it until the whole Settings
+        // process is relaunched. A freshly-built window carries zero residual
+        // state, so `beginSheet` on it always succeeds. `installFresh` retires and
+        // releases any prior controller and keeps exactly one alive, so button
+        // targets never dangle and nothing is released mid-present. The getter is
+        // deliberately trivial (no mutation that could partially fail).
+        AuroraConfigController.installFresh(for: self)
+        return AuroraConfigController.current?.window
     }
 
     /// Re-read settings after the Options sheet closes so a still-running preview
@@ -497,17 +497,24 @@ final class AuroraView: ScreenSaverView {
 /// same knobs popular screensavers offer, and persists them through
 /// `AuroraPreferences`.
 final class AuroraConfigController: NSObject {
-    /// One config window for the whole process. Lives as long as the saver
-    /// bundle is loaded; the System Settings host retains it only for the
-    /// duration of each sheet present. Because it is a static singleton its
-    /// button targets can never dangle (the old per-view design needed an
-    /// associated-object retain to avoid exactly that).
-    static let shared = AuroraConfigController()
+    /// The single controller currently alive. Each `configureSheet` call retires
+    /// the previous one and installs a fresh controller here, so at most one
+    /// Options window exists at a time and its button targets can never dangle
+    /// (the strong static holds it for its whole present/dismiss lifetime). This
+    /// replaces the old process-wide singleton whose *reused* window was the
+    /// source of the intermittent "Options won't open" failure.
+    static private(set) var current: AuroraConfigController?
+
+    /// Retire any prior controller and install a brand-new one bound to `view`.
+    /// The new controller builds a fresh, pristine window — the crux of the fix.
+    static func installFresh(for view: AuroraView) {
+        current?.retire()
+        current = AuroraConfigController(view: view)
+    }
 
     let window: NSWindow
-    /// The view that most recently vended the sheet; settings are read/written
-    /// through it so preview and saver stay in sync. Weak so a recreated view
-    /// can deallocate normally.
+    /// The view that vended this sheet; settings are read/written through it so
+    /// preview and saver stay in sync. Weak so a recreated view can deallocate.
     private weak var currentView: AuroraView?
 
     private let scenePopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -522,7 +529,10 @@ final class AuroraConfigController: NSObject {
     private let clockPositionPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let clock24hCheckbox = NSButton(checkboxWithTitle: "24-hour clock", target: nil, action: nil)
 
-    private override init() {
+    /// Build a fresh Options window bound to `view` and seed its controls. Every
+    /// present gets one of these — never a reused window.
+    private init(view: AuroraView) {
+        self.currentView = view
         self.window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 380, height: 604),
             styleMask: [.titled],
@@ -530,38 +540,27 @@ final class AuroraConfigController: NSObject {
             defer: false
         )
         super.init()
-        // NSWindow defaults isReleasedWhenClosed = true, firing an extra release
-        // on close. ARC already owns this window via the strong static `shared`
-        // reference, so that extra release over-releases it and crashes the host.
-        // Disable it so close() is a clean state-reset we can call freely.
+        // We own the window's lifetime via the `current` static; disabling
+        // release-on-close means our explicit close()/retire() can't over-release
+        // it out from under the host.
         window.isReleasedWhenClosed = false
         buildUI()
-    }
-
-    /// Bind the controller to the live view that requested the sheet and seed the
-    /// controls from its persisted settings.
-    func attach(to view: AuroraView) {
-        currentView = view
         refreshFromPreferences()
     }
 
-    /// Force the reused window into a clean, unattached, hidden state so the host
-    /// can always begin a fresh sheet on it. The intermittent "Options won't
-    /// open" failure is the host refusing to begin a sheet on a window that still
-    /// carries residual sheet/visibility/parent state from a previous present.
-    /// Scrubbing every such bit before handing the window back closes that gap.
-    func prepareForPresentation() {
+    /// Tear down cleanly before this controller is released: end any presentation
+    /// so the host drops its reference, then close. Safe to call whether or not
+    /// the window was ever presented.
+    private func retire() {
         if let parent = window.sheetParent { parent.endSheet(window) }
-        window.parent?.removeChildWindow(window)
         if window.isVisible { window.orderOut(nil) }
-        if window.styleMask != [.titled] { window.styleMask = [.titled] }
-        refreshFromPreferences()
+        window.close()
     }
 
     private var preferences: AuroraPreferences? { currentView?.preferences }
 
-    /// Re-seed every control from the persisted preferences. Called each time the
-    /// sheet is vended so the reused window never shows stale values.
+    /// Seed every control from the persisted preferences. Called once at build,
+    /// on this controller's fresh window.
     func refreshFromPreferences() {
         guard let preferences else { return }
         scenePopup.selectItem(at: preferences.sceneIndex)
@@ -583,8 +582,7 @@ final class AuroraConfigController: NSObject {
         content.autoresizingMask = [.width, .height]
 
         // Controls are laid out top-down with a running y cursor so the list is
-        // easy to extend. Values are seeded by refreshFromPreferences() before
-        // every present (the singleton is built before any view has attached).
+        // easy to extend. Values are seeded by refreshFromPreferences() in init.
         var y: CGFloat = 558
         let step: CGFloat = 44
 
@@ -672,11 +670,12 @@ final class AuroraConfigController: NSObject {
     }
 
     private func dismiss() {
-        // End the sheet, then close() — not orderOut. close() fully clears the
-        // window's sheet/visibility bookkeeping that would otherwise make the
-        // host refuse the next beginSheet; isReleasedWhenClosed=false keeps the
-        // singleton object alive for reuse. Let the live view re-read settings so
-        // a running preview reflects the change immediately.
+        // End the sheet and close this (single-use) window, then let the live view
+        // re-read settings so a running preview reflects the change immediately.
+        // We intentionally leave `current` pointing at this now-closed controller
+        // until the next Options click replaces it — dropping the strong ref here
+        // could deallocate self while this button-action method is still on the
+        // stack. The next `installFresh` retires + releases it cleanly.
         if let parent = window.sheetParent {
             parent.endSheet(window)
         }
