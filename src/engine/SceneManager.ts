@@ -138,9 +138,14 @@ export class SceneManager {
     this.now = options.now ?? (() => performance.now());
     this.onFrame = options.onFrame;
 
+    // Ask the browser for the LOW-POWER (integrated) GPU: a screensaver is
+    // ambient background work, and "high-performance" is the WebGL hint that
+    // explicitly requests the discrete GPU — on dual-GPU laptops that keeps the
+    // power-hungry GPU awake for the whole run. Adaptive resolution keeps the
+    // integrated GPU smooth. Single-GPU machines ignore the hint.
     this.renderer =
       options.createRenderer?.(canvas) ??
-      new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, powerPreference: "high-performance" });
+      new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, powerPreference: "low-power" });
 
     this.renderer.setPixelRatio(this.effectivePixelRatio(this.width, this.height));
 

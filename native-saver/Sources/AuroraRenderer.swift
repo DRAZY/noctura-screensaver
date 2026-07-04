@@ -28,10 +28,29 @@ final class AuroraRenderer {
     private let gpuFrameTimeLock = OSAllocatedUnfairLock<Double>(initialState: 0)
     var lastGPUFrameTime: Double { gpuFrameTimeLock.withLock { $0 } }
 
+    /// Pick the Metal device to render on. A screensaver is ambient background
+    /// work, so we prefer the LOW-POWER (integrated) GPU when the Mac has more
+    /// than one: `MTLCreateSystemDefaultDevice()` returns the *discrete* GPU on
+    /// dual-GPU Intel MacBook Pros, which forces a GPU switch that keeps the
+    /// power-hungry GPU awake the entire time the saver runs — the opposite of
+    /// what an idle screensaver wants. Adaptive resolution keeps the integrated
+    /// GPU comfortable. Apple Silicon reports a single device, so this is a no-op
+    /// there; eGPUs/removable devices are skipped (they can vanish mid-run).
+    private static func preferredDevice() -> MTLDevice? {
+        let all = MTLCopyAllDevices()
+        if all.isEmpty { return MTLCreateSystemDefaultDevice() }
+        if let integrated = all.first(where: { $0.isLowPower && !$0.isRemovable }) {
+            return integrated
+        }
+        // No integrated GPU (e.g. Mac Pro): fall back to a non-removable device,
+        // else the system default.
+        return all.first(where: { !$0.isRemovable }) ?? MTLCreateSystemDefaultDevice()
+    }
+
     /// Build the full pipeline. `pixelFormat` must match the target layer's
     /// `pixelFormat` (CAMetalLayer defaults to `.bgra8Unorm`).
     init?(pixelFormat: MTLPixelFormat = .bgra8Unorm) {
-        guard let device = MTLCreateSystemDefaultDevice(),
+        guard let device = AuroraRenderer.preferredDevice(),
               let queue = device.makeCommandQueue() else {
             return nil
         }

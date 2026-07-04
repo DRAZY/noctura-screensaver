@@ -26,7 +26,7 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::{
-    D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_10_0,
+    D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_10_0,
     D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
     ID3DBlob,
 };
@@ -35,8 +35,9 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_MODE_DESC, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, IDXGIFactory, IDXGISurface, IDXGISwapChain, DXGI_SWAP_CHAIN_DESC,
-    DXGI_SWAP_EFFECT_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
+    CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory, IDXGIFactory6, IDXGISurface, IDXGISwapChain,
+    DXGI_GPU_PREFERENCE_MINIMUM_POWER, DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_EFFECT_DISCARD,
+    DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
 
 /// CPU-side mirror of the HLSL `Constants` cbuffer. Field order, types, and
@@ -138,6 +139,20 @@ unsafe fn compile(entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
     blob.ok_or_else(|| Error::from_win32())
 }
 
+/// The DXGI adapter with the lowest power draw (the integrated GPU on a dual-GPU
+/// laptop), or `None` if it can't be determined — in which case the caller uses
+/// the default adapter. Uses `IDXGIFactory6::EnumAdapterByGpuPreference`, which
+/// exists on Windows 10 1803+; on older systems the factory cast fails and we
+/// return `None` (safe fallback to today's behaviour).
+fn low_power_adapter() -> Option<IDXGIAdapter> {
+    unsafe {
+        let factory: IDXGIFactory6 = CreateDXGIFactory1().ok()?;
+        factory
+            .EnumAdapterByGpuPreference::<IDXGIAdapter>(0, DXGI_GPU_PREFERENCE_MINIMUM_POWER)
+            .ok()
+    }
+}
+
 impl Gfx {
     pub fn new() -> Result<Gfx> {
         unsafe {
@@ -155,24 +170,22 @@ impl Gfx {
                 D3D_FEATURE_LEVEL_10_0,
             ];
             let mut achieved = D3D_FEATURE_LEVEL_11_0;
-            let hw = D3D11CreateDevice(
-                None,
-                D3D_DRIVER_TYPE_HARDWARE,
-                None,
-                D3D11_CREATE_DEVICE_FLAG(0),
-                Some(&levels),
-                D3D11_SDK_VERSION,
-                Some(&mut device),
-                Some(&mut achieved),
-                Some(&mut context),
-            );
-            let driver = if hw.is_err() {
-                crate::log::line(&format!(
-                    "hardware device failed ({hw:?}); falling back to WARP"
-                ));
-                D3D11CreateDevice(
-                    None,
-                    D3D_DRIVER_TYPE_WARP,
+
+            // Prefer the LOW-POWER (integrated) GPU: a screensaver is ambient
+            // background work, and the default adapter on a dual-GPU laptop is the
+            // discrete GPU, which then stays awake burning battery for the whole
+            // run. Ask DXGI for the minimum-power adapter and create the device on
+            // it explicitly (driver type UNKNOWN is required when an adapter is
+            // passed). This is best-effort: if IDXGIFactory6 / enumeration / the
+            // device create on that adapter fails for any reason, we fall straight
+            // through to the exact default-adapter HARDWARE path we shipped before,
+            // so this can never introduce the "black screensaver" trap.
+            let low_power = low_power_adapter();
+            let mut driver = "";
+            if let Some(adapter) = &low_power {
+                let hr = D3D11CreateDevice(
+                    adapter,
+                    D3D_DRIVER_TYPE_UNKNOWN,
                     None,
                     D3D11_CREATE_DEVICE_FLAG(0),
                     Some(&levels),
@@ -180,11 +193,48 @@ impl Gfx {
                     Some(&mut device),
                     Some(&mut achieved),
                     Some(&mut context),
-                )?;
-                "warp"
-            } else {
-                "hardware"
-            };
+                );
+                if hr.is_ok() {
+                    driver = "hardware(low-power)";
+                } else {
+                    crate::log::line(&format!("low-power adapter device failed ({hr:?}); using default"));
+                    device = None;
+                    context = None;
+                }
+            }
+
+            if device.is_none() {
+                let hw = D3D11CreateDevice(
+                    None,
+                    D3D_DRIVER_TYPE_HARDWARE,
+                    None,
+                    D3D11_CREATE_DEVICE_FLAG(0),
+                    Some(&levels),
+                    D3D11_SDK_VERSION,
+                    Some(&mut device),
+                    Some(&mut achieved),
+                    Some(&mut context),
+                );
+                driver = if hw.is_err() {
+                    crate::log::line(&format!(
+                        "hardware device failed ({hw:?}); falling back to WARP"
+                    ));
+                    D3D11CreateDevice(
+                        None,
+                        D3D_DRIVER_TYPE_WARP,
+                        None,
+                        D3D11_CREATE_DEVICE_FLAG(0),
+                        Some(&levels),
+                        D3D11_SDK_VERSION,
+                        Some(&mut device),
+                        Some(&mut achieved),
+                        Some(&mut context),
+                    )?;
+                    "warp"
+                } else {
+                    "hardware"
+                };
+            }
             let device = device.ok_or_else(Error::from_win32)?;
             let context = context.ok_or_else(Error::from_win32)?;
             let factory: IDXGIFactory = CreateDXGIFactory1()?;
