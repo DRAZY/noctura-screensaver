@@ -1,24 +1,27 @@
 import * as THREE from "three";
 import type { Parameter, ParameterValue } from "../engine/types";
 import { hexToColor, paletteById, PALETTE_OPTIONS } from "../engine/palette";
-import { DITHER, SIMPLEX_2D } from "../engine/shaders/noise.glsl";
+import { DITHER, SIMPLEX_3D } from "../engine/shaders/noise.glsl";
 import { FullscreenScene } from "./FullscreenScene";
 
 /**
- * Drift — an homage to the macOS "Drift" screensaver, informed by its open
- * tribute Flux (github.com/sandydoo/flux). Thousands of short dashes are combed
- * along a slow, divergence-free flow field over big soft regions of palette
- * color — the woven, brushed-fingerprint texture of light streaming around
- * vortices on black.
+ * Flux Drift — an homage to the macOS "Drift" screensaver and its open-source
+ * tribute Flux (github.com/sandydoo/flux). Long luminous streaks are combed along
+ * a slow, divergence-free flow field and pile up into flowing ribbons of light
+ * that curl around vortices — bright where the current runs fast, fading to black
+ * where it rests — over big soft regions of palette colour.
  *
- * A single fullscreen fragment shader (no particles / no ping-pong) so it ports
- * cleanly to the native Metal / D3D savers. Per pixel it walks the 3×3 grid of
- * neighbouring cells; each cell drops one dash anchored at its (jittered) centre,
- * oriented along the local flow velocity — the curl of a smooth, slowly-evolving
- * scalar potential, kept UN-normalized so its magnitude survives. That magnitude
- * (flow speed) drives each dash's length and brightness, so — exactly like Flux —
- * still water thins to black and fast water combs into long bright strokes. Big
- * palette-cycled colour regions tint the whole field.
+ * Technique (validated against Flux — see docs/DRIFT_FLUX_RESEARCH.md): a single
+ * fullscreen fragment shader with no persistent state. The flow velocity is the
+ * curl of a slowly-evolving 3-octave simplex "stream function", kept UN-normalized
+ * so its magnitude is the local flow speed. For each pixel we visit a
+ * neighbourhood of grid basepoints; from each we integrate a short streamline
+ * (RK2) whose length AND width scale with local speed, take the pixel's distance
+ * to that streamline, taper it head-to-tail, and ACCUMULATE ADDITIVELY across all
+ * nearby streamlines. The two things that make it read as Flux rather than a field
+ * of stubs: streamlines long enough to overlap + additive blending, and
+ * width/opacity that collapse to zero in calm water. Big palette-cycled colour
+ * zones tint the result. Ports cleanly to the native Metal / D3D savers.
  */
 
 const VERT = /* glsl */ `
@@ -32,19 +35,28 @@ varying vec2 vUv;
 uniform float uTime;
 uniform float uSpeed;
 uniform float uFlow;     // swirl scale (bigger = smaller, tighter vortices)
-uniform float uGrid;     // dash density (cells across the field)
-uniform float uDash;     // dash length multiplier
-uniform float uGlow;     // dash brightness
+uniform float uGrid;     // grid density (cells across the field)
+uniform float uLen;      // streamline length in cells (<= SEARCH)
+uniform float uGlow;     // additive brightness gain
 uniform vec2  uResolution;
 uniform vec3  uColorA;
 uniform vec3  uColorB;
 uniform vec3  uColorC;
 uniform vec3  uSky;      // near-black background
 
-${SIMPLEX_2D}
+${SIMPLEX_3D}
 ${DITHER}
 
-// Smooth A->B->C->A cycle so the big color regions braid through all three stops.
+// Fixed tunables (from the validated prototype; not user-facing).
+#define KSTEPS 6                    // streamline polyline segments (RK2)
+#define SEARCH 6                    // basepoint neighbourhood half-width (>= uLen)
+const float LINE_BEGIN_OFFSET = 0.4;
+const float LINE_VARIANCE = 0.55;
+const float SPEED_GAIN = 2.0;       // width_boost = clamp(GAIN * |v|, 0, 1)
+const float HALF_WIDTH = 0.18;      // stroke half-width in cells at full speed
+const float HEAD_GLOW = 0.22;       // extra brightness at the leading tip
+
+// A->B->C->A palette cycle for the big colour zones.
 vec3 ncCyc(float x) {
   float f = fract(x);
   if (f < 0.3333) return mix(uColorA, uColorB, f / 0.3333);
@@ -53,99 +65,107 @@ vec3 ncCyc(float x) {
 }
 
 float hash21(vec2 p) {
-  p = fract(p * vec2(123.34, 345.45));
-  p += dot(p, p + 34.345);
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
   return fract(p.x * p.y);
 }
 
-// Divergence-free flow velocity at x (curl of a smooth, slowly-evolving scalar
-// potential): vel = (dPot/dy, -dPot/dx). Kept UN-normalized so its magnitude
-// survives — this is the crux of the Flux look: line LENGTH scales with local
-// flow speed, so calm water shows tiny stubs and fast currents draw long streaks.
-vec2 driftVel(vec2 x, float t) {
-  float e = 0.02;
-  vec2 dr = vec2(t * 0.045, -t * 0.03);
-  float pxp = snoise((x + vec2(e, 0.0)) * 0.6 + dr);
-  float pxm = snoise((x - vec2(e, 0.0)) * 0.6 + dr);
-  float pyp = snoise((x + vec2(0.0, e)) * 0.6 + dr);
-  float pym = snoise((x - vec2(0.0, e)) * 0.6 + dr);
-  vec2 curl = vec2(pyp - pym, -(pxp - pxm)) / (2.0 * e);
-  return curl + vec2(0.4, 0.14); // gentle laminar bias
+// 3-octave simplex stream function; its curl (below) is a divergence-free flow.
+float streamPsi(vec2 p, float t) {
+  return 1.00 * snoise3(vec3(p * 0.9, t * 0.05))
+       + 0.65 * snoise3(vec3(p * 2.4, t * 0.12))
+       + 0.38 * snoise3(vec3(p * 4.8, t * 0.20));
+}
+
+// Flow velocity = curl of the stream function (finite differences). UN-normalized
+// so |v| is the local flow speed, which drives streak length + width + brightness.
+vec2 velocityAt(vec2 p, float t) {
+  const float e = 0.75;
+  float px1 = streamPsi(p + vec2(e, 0.0), t), px0 = streamPsi(p - vec2(e, 0.0), t);
+  float py1 = streamPsi(p + vec2(0.0, e), t), py0 = streamPsi(p - vec2(0.0, e), t);
+  return vec2(py1 - py0, -(px1 - px0)) / (2.0 * e);
+}
+
+// Total streak brightness at a pixel: gather the streamlines seeded at every
+// grid basepoint in a (2*SEARCH+1)^2 neighbourhood, integrate each one, and add
+// (never max) its contribution so overlapping streaks bloom into ribbons.
+float streakField(vec2 uv, float t) {
+  float cell = 1.0 / uGrid;
+  vec2 baseId = floor(uv / cell);
+  float lenCells = clamp(uLen, 1.0, float(SEARCH)); // streaks must fit the search box
+  float accum = 0.0;
+  for (int j = -SEARCH; j <= SEARCH; j++) {
+    for (int i = -SEARCH; i <= SEARCH; i++) {
+      vec2 cellId = baseId + vec2(float(i), float(j));
+      vec2 bp = (cellId + 0.5) * cell;                 // basepoint = grid node
+      vec2 v0 = velocityAt(bp * uFlow, t);
+      float boost = smoothstep(0.0, 1.0, clamp(SPEED_GAIN * length(v0), 0.0, 1.0));
+      if (boost < 0.01) continue;                      // calm water → no streak
+      float rnd = hash21(cellId);
+      float variance = mix(1.0 - LINE_VARIANCE, 1.0, rnd);
+      float lineLen = lenCells * cell * boost * variance;
+      float halfW = HALF_WIDTH * cell * boost;
+      if (lineLen < 1e-5) continue;
+      if (dot(uv - bp, uv - bp) > (lineLen + halfW) * (lineLen + halfW)) continue; // AABB reject
+
+      float ds = lineLen / float(KSTEPS);
+      vec2 pPrev = bp;
+      float best = 1e9, bestS = 0.0, arc = 0.0;
+      for (int k = 0; k < KSTEPS; k++) {               // integrate the streamline (RK2)
+        vec2 vk = velocityAt(pPrev * uFlow, t);
+        vec2 dk = vk / max(length(vk), 1e-5);
+        vec2 pMid = pPrev + dk * (0.5 * ds);
+        vec2 vm = velocityAt(pMid * uFlow, t);
+        vec2 dm = vm / max(length(vm), 1e-5);
+        vec2 pNext = pPrev + dm * ds;
+        vec2 pa = uv - pPrev, ba = pNext - pPrev;
+        float hh = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+        float d = length(pa - ba * hh);
+        float s = (arc + hh * ds) / lineLen;           // 0 at base, 1 at tip
+        if (d < best) { best = d; bestS = s; }
+        arc += ds; pPrev = pNext;
+      }
+      float fade = smoothstep(LINE_BEGIN_OFFSET, 1.0, bestS); // tail fades out
+      float aa = 1.5 / uResolution.y + 1e-5;           // fixed AA (NOT fwidth — grids at seams)
+      float edge = 1.0 - smoothstep(halfW - aa, halfW, best);
+      float alpha = boost * fade * edge;
+      if (alpha <= 0.0) continue;
+      alpha += HEAD_GLOW * smoothstep(0.8, 1.0, bestS) * edge * boost; // head bead
+      accum += alpha;                                  // ADDITIVE accumulation
+    }
+  }
+  return accum;
 }
 
 void main() {
   float aspect = uResolution.x / max(uResolution.y, 1.0);
-  // Aspect-corrected square space so strokes keep their proportions.
-  vec2 uv = vec2((vUv.x - 0.5) * aspect, vUv.y - 0.5);
+  vec2 uv = vec2((vUv.x - 0.5) * aspect, vUv.y - 0.5); // aspect-corrected, centred
   float t = uTime * uSpeed;
 
-  float cell1 = 1.0 / uGrid;
-  vec2 baseCell = floor(uv * uGrid);
+  float b = streakField(uv, t);
 
-  // Flux geometry: thick strokes (~0.6 of cell spacing wide, so half-width ~0.3)
-  // whose LENGTH is set by flow speed. uDash scales length; strokes can span a
-  // couple of cells in fast flow, so we walk a 5x5 neighbourhood to catch strokes
-  // anchored a couple of cells away whose body reaches this pixel.
-  float halfW = 0.26 * cell1;
-  float lenGain = 3.6 * uDash * cell1; // uv length per unit flow speed (Flux: long)
-  float maxLen = 1.95 * cell1;
+  // Big, smooth palette-cycled colour zones (coherent per region, like Flux's
+  // velocity wash). A low-frequency noise gives the organic zone shapes; a gentle
+  // diagonal gradient sweeps the whole frame through all three palette stops so
+  // every colour is present (not just a narrow band). One cheap lookup.
+  float creg = 0.7 * snoise3(vec3(uv * uFlow * 0.22, t * 0.05))
+             + 0.55 * (uv.x + uv.y) + 0.04 * t;
+  vec3 tint = ncCyc(creg);
 
-  float lit = 0.0;
-  for (int j = -2; j <= 2; j++) {
-    for (int i = -2; i <= 2; i++) {
-      vec2 cell = baseCell + vec2(float(i), float(j));
-      float r = hash21(cell);
-      float r2 = hash21(cell + 7.31);
-
-      // Stroke anchor (tail): cell centre jittered off the lattice.
-      vec2 a = (cell + 0.5) * cell1 + (vec2(r, r2) - 0.5) * 0.7 * cell1;
-
-      // Local flow → direction + speed. Length grows with speed (Flux), so calm
-      // regions rest to near-nothing and fast regions draw long strokes.
-      vec2 v = driftVel(a * uFlow, t);
-      float speed = length(v);
-      vec2 dir = v / max(speed, 1e-4);
-      float len = clamp(speed * lenGain, 0.18 * cell1, maxLen);
-      vec2 tip = a + dir * len; // stroke runs tail(a) -> tip, along the flow
-
-      // Project this pixel onto the stroke: h in [0,1] along it, d perpendicular.
-      vec2 pa = uv - a, ba = tip - a;
-      float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
-      float d = length(pa - ba * h);
-
-      // Rounded soft edge across the width; taper the width toward both ends so
-      // strokes read as clean lozenge brush marks rather than blunt capsules.
-      float wProfile = halfW * (0.35 + 0.65 * sin(h * 3.14159));
-      float edge = smoothstep(wProfile, wProfile * 0.25, d);
-
-      // Brightness ramps up toward the leading tip (the flow-pushed head), like a
-      // comet — the signature Flux stroke shading. Slow strokes are dim + short.
-      float headGlow = 0.35 + 0.65 * h;
-      float speedB = smoothstep(0.05, 0.9, speed);
-      lit = max(lit, edge * headGlow * (0.5 + 0.5 * r) * speedB);
-    }
-  }
-
-  // Large-scale colour regions (big magenta / green / blue zones like the
-  // reference), palette-cycled and drifting slowly — colour is by position, not
-  // per dash, so neighbouring dashes share a hue and read as one region.
-  float creg = snoise(uv * uFlow * 0.28 + 3.0) * 0.5 + 0.5;
-  vec3 col = ncCyc(creg + 0.03 * t);
-
-  vec3 outc = uSky + col * lit * uGlow;
+  vec3 outc = uSky + tint * b * uGlow;
   float vig = 1.0 - 0.26 * dot(vUv - 0.5, vUv - 0.5);
   outc *= vig;
-  outc = outc / (outc + 0.75);
+  outc = outc / (outc + 0.85);                         // soft tone-map (bloom)
   outc = pow(outc, vec3(0.85));
   gl_FragColor = vec4(outc + dither(gl_FragCoord.xy), 1.0);
 }
 `;
 
 const DEFAULT_THEME = "nebula";
-const DEFAULT_FLOW = 2.6;   // swirl scale
-const DEFAULT_GRID = 40;    // stroke grid density (cells across the field)
-const DEFAULT_DASH = 1.0;   // stroke length multiplier
-const DEFAULT_GLOW = 1.8;
+const DEFAULT_FLOW = 2.0;   // swirl scale
+const DEFAULT_GRID = 42;    // grid density (cells across the field)
+const DEFAULT_LEN = 5.0;    // streamline length in cells (SEARCH=6 caps it)
+const DEFAULT_GLOW = 1.5;
 // Drift's signature is multi-hue (magenta / green / blue), so the default color
 // stops are a vibrant triad rather than a single-hue palette. Picking a Theme in
 // the UI overrides these with that palette's stops.
@@ -159,10 +179,10 @@ export class Drift extends FullscreenScene {
   readonly description = "Dashes of light combed around slow vortices — the macOS Drift look.";
 
   readonly parameters: ReadonlyArray<Parameter> = [
-    { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 1.5, step: 0.01, default: 0.4 },
-    { kind: "range", id: "scale", label: "Swirl Scale", min: 1.2, max: 5.0, step: 0.1, default: DEFAULT_FLOW },
-    { kind: "range", id: "density", label: "Density", min: 28, max: 72, step: 1, default: DEFAULT_GRID },
-    { kind: "range", id: "dash", label: "Stroke Length", min: 0.5, max: 1.8, step: 0.05, default: DEFAULT_DASH },
+    { kind: "range", id: "speed", label: "Speed", min: 0.05, max: 1.5, step: 0.01, default: 0.3 },
+    { kind: "range", id: "scale", label: "Swirl Scale", min: 1.2, max: 4.0, step: 0.1, default: DEFAULT_FLOW },
+    { kind: "range", id: "density", label: "Density", min: 30, max: 56, step: 1, default: DEFAULT_GRID },
+    { kind: "range", id: "dash", label: "Stroke Length", min: 3.0, max: 6.0, step: 0.5, default: DEFAULT_LEN },
     { kind: "range", id: "glow", label: "Glow", min: 0.4, max: 2.4, step: 0.05, default: DEFAULT_GLOW },
     { kind: "select", id: "theme", label: "Theme", options: PALETTE_OPTIONS, default: DEFAULT_THEME },
     { kind: "color", id: "colorA", label: "Color A", default: DRIFT_A },
@@ -178,10 +198,10 @@ export class Drift extends FullscreenScene {
       depthWrite: false,
       uniforms: {
         uTime: { value: 0 },
-        uSpeed: { value: 0.4 },
+        uSpeed: { value: 0.3 },
         uFlow: { value: DEFAULT_FLOW },
         uGrid: { value: DEFAULT_GRID },
-        uDash: { value: DEFAULT_DASH },
+        uLen: { value: DEFAULT_LEN },
         uGlow: { value: DEFAULT_GLOW },
         uResolution: { value: new THREE.Vector2(1, 1) },
         uColorA: { value: hexToColor(DRIFT_A) },
@@ -205,7 +225,7 @@ export class Drift extends FullscreenScene {
         u.uGrid.value = Number(value);
         break;
       case "dash":
-        u.uDash.value = Number(value);
+        u.uLen.value = Number(value);
         break;
       case "glow":
         u.uGlow.value = Number(value);

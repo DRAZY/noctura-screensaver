@@ -676,72 +676,141 @@ float3 sceneFractal(float2 uv0, float aspect) {
     return col * vig;
 }
 
-// ---- Scene 16: Drift -------------------------------------------------------
-// Homage to the macOS "Drift" screensaver and its open tribute Flux
-// (github.com/sandydoo/flux): thick tapered strokes combed along a slow
-// divergence-free flow field, each stroke's LENGTH set by local flow speed —
-// calm water shows tiny stubs, fast currents draw long streaks — brightening
-// toward the flow-pushed tip, over big soft palette-colour regions. Density →
-// stroke count, size → swirl scale, intensity → glow. Port of the WebGL scene.
+// ---- Scene 16: Flux Drift --------------------------------------------------
+// Homage to macOS "Drift" and its open tribute Flux (github.com/sandydoo/flux):
+// long luminous streaks combed along a slow divergence-free flow field, piling up
+// additively into flowing ribbons that curl around vortices — bright in fast
+// current, black in calm — over big soft palette-colour zones. Faithful port of
+// the validated WebGL scene (docs/DRIFT_FLUX_RESEARCH.md). Size → swirl scale,
+// density → grid, intensity → glow, colours from the palette.
 float driftHash(float2 p) {
-    p = frac(p * float2(123.34, 345.45));
-    p += dot(p, p + 34.345);
+    p = frac(p * float2(123.34, 456.21));
+    p += dot(p, p + 45.32);
     return frac(p.x * p.y);
 }
-// Divergence-free flow velocity (curl of a smooth, slowly-evolving potential),
-// kept un-normalized so its magnitude (flow speed) drives stroke length.
-float2 driftVel(float2 x, float t) {
-    float e = 0.02;
-    float2 dr = float2(t * 0.045, -t * 0.03);
-    float pxp = snoise((x + float2(e, 0.0)) * 0.6 + dr);
-    float pxm = snoise((x - float2(e, 0.0)) * 0.6 + dr);
-    float pyp = snoise((x + float2(0.0, e)) * 0.6 + dr);
-    float pym = snoise((x - float2(0.0, e)) * 0.6 + dr);
-    float2 curl = float2(pyp - pym, -(pxp - pxm)) / (2.0 * e);
-    return curl + float2(0.4, 0.14);
+// --- 3D simplex noise (Ashima) for the time-evolving stream function ---------
+float4 s3mod289_4(float4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+float3 s3mod289_3(float3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+float4 s3permute(float4 x) { return s3mod289_4(((x * 34.0) + 1.0) * x); }
+float4 s3tis(float4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+float snoise3(float3 v) {
+    const float2 C = float2(1.0/6.0, 1.0/3.0);
+    const float4 D = float4(0.0, 0.5, 1.0, 2.0);
+    float3 i  = floor(v + dot(v, C.yyy));
+    float3 x0 = v - i + dot(i, C.xxx);
+    float3 g = step(x0.yzx, x0.xyz);
+    float3 l = 1.0 - g;
+    float3 i1 = min(g.xyz, l.zxy);
+    float3 i2 = max(g.xyz, l.zxy);
+    float3 x1 = x0 - i1 + C.xxx;
+    float3 x2 = x0 - i2 + C.yyy;
+    float3 x3 = x0 - D.yyy;
+    i = s3mod289_3(i);
+    float4 p = s3permute(s3permute(s3permute(
+                i.z + float4(0.0, i1.z, i2.z, 1.0))
+              + i.y + float4(0.0, i1.y, i2.y, 1.0))
+              + i.x + float4(0.0, i1.x, i2.x, 1.0));
+    float n_ = 0.142857142857;
+    float3 ns = n_ * D.wyz - D.xzx;
+    float4 j = p - 49.0 * floor(p * ns.z * ns.z);
+    float4 x_ = floor(j * ns.z);
+    float4 y_ = floor(j - 7.0 * x_);
+    float4 x = x_ * ns.x + ns.yyyy;
+    float4 y = y_ * ns.x + ns.yyyy;
+    float4 h = 1.0 - abs(x) - abs(y);
+    float4 b0 = float4(x.xy, y.xy);
+    float4 b1 = float4(x.zw, y.zw);
+    float4 s0 = floor(b0) * 2.0 + 1.0;
+    float4 s1 = floor(b1) * 2.0 + 1.0;
+    float4 sh = -step(h, float4(0.0, 0.0, 0.0, 0.0));
+    float4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
+    float4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+    float3 p0 = float3(a0.xy, h.x);
+    float3 p1 = float3(a0.zw, h.y);
+    float3 p2 = float3(a1.xy, h.z);
+    float3 p3 = float3(a1.zw, h.w);
+    float4 norm = s3tis(float4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+    float4 m = max(0.6 - float4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+    m = m * m;
+    return 42.0 * dot(m * m, float4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+}
+float driftPsi(float2 p, float t) {
+    return 1.00 * snoise3(float3(p * 0.9, t * 0.05))
+         + 0.65 * snoise3(float3(p * 2.4, t * 0.12))
+         + 0.38 * snoise3(float3(p * 4.8, t * 0.20));
+}
+float2 driftVel(float2 p, float t) {
+    const float e = 0.75;
+    float px1 = driftPsi(p + float2(e, 0.0), t), px0 = driftPsi(p - float2(e, 0.0), t);
+    float py1 = driftPsi(p + float2(0.0, e), t), py0 = driftPsi(p - float2(0.0, e), t);
+    return float2(py1 - py0, -(px1 - px0)) / (2.0 * e);
 }
 float3 sceneDrift(float2 uv0, float aspect) {
     float2 uv = float2((uv0.x - 0.5) * aspect, uv0.y - 0.5);
     float t = uTime * uSpeed;
-    float flow = 2.6 * clamp(uSize, 0.4, 2.2);
-    float grid = lerp(34.0, 60.0, clamp(uDensity, 0.0, 1.0));
+    float flow = 2.0 * clamp(uSize, 0.4, 2.2);
+    float grid = lerp(36.0, 52.0, clamp(uDensity, 0.0, 1.0));
     float glow = 1.0 + uIntensity;
+    const int KSTEPS = 6;
+    const int SEARCH = 6;
+    const float LINE_BEGIN_OFFSET = 0.4;
+    const float LINE_VARIANCE = 0.55;
+    const float SPEED_GAIN = 2.0;
+    const float HALF_WIDTH = 0.18;
+    const float HEAD_GLOW = 0.22;
 
-    float cell1 = 1.0 / grid;
-    float2 baseCell = floor(uv * grid);
-    float halfW = 0.26 * cell1;
-    float lenGain = 3.6 * cell1;
-    float maxLen = 1.95 * cell1;
-
-    float lit = 0.0;
-    [loop] for (int j = -2; j <= 2; j++) {
-        [loop] for (int i = -2; i <= 2; i++) {
-            float2 cell = baseCell + float2(float(i), float(j));
-            float r = driftHash(cell);
-            float r2 = driftHash(cell + 7.31);
-            float2 a = (cell + 0.5) * cell1 + (float2(r, r2) - 0.5) * 0.7 * cell1;
-            float2 v = driftVel(a * flow, t);
-            float speed = length(v);
-            float2 dir = v / max(speed, 1e-4);
-            float len = clamp(speed * lenGain, 0.18 * cell1, maxLen);
-            float2 tip = a + dir * len;
-            float2 pa = uv - a, ba = tip - a;
-            float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
-            float d = length(pa - ba * h);
-            float wProfile = halfW * (0.35 + 0.65 * sin(h * 3.14159));
-            float edge = smoothstep(wProfile, wProfile * 0.25, d);
-            float headGlow = 0.35 + 0.65 * h;
-            float speedB = smoothstep(0.05, 0.9, speed);
-            lit = max(lit, edge * headGlow * (0.5 + 0.5 * r) * speedB);
+    float cell = 1.0 / grid;
+    float2 baseId = floor(uv / cell);
+    float lenCells = min(5.0, (float)SEARCH);
+    float accum = 0.0;
+    [loop] for (int j = -SEARCH; j <= SEARCH; j++) {
+        [loop] for (int i = -SEARCH; i <= SEARCH; i++) {
+            float2 cellId = baseId + float2(float(i), float(j));
+            float2 bp = (cellId + 0.5) * cell;
+            float2 v0 = driftVel(bp * flow, t);
+            float boost = smoothstep(0.0, 1.0, clamp(SPEED_GAIN * length(v0), 0.0, 1.0));
+            if (boost < 0.01) continue;
+            float rnd = driftHash(cellId);
+            float variance = lerp(1.0 - LINE_VARIANCE, 1.0, rnd);
+            float lineLen = lenCells * cell * boost * variance;
+            float halfW = HALF_WIDTH * cell * boost;
+            if (lineLen < 1e-5) continue;
+            if (dot(uv - bp, uv - bp) > (lineLen + halfW) * (lineLen + halfW)) continue;
+            float ds = lineLen / float(KSTEPS);
+            float2 pPrev = bp;
+            float best = 1e9, bestS = 0.0, arc = 0.0;
+            [loop] for (int k = 0; k < KSTEPS; k++) {
+                float2 vk = driftVel(pPrev * flow, t);
+                float2 dk = vk / max(length(vk), 1e-5);
+                float2 pMid = pPrev + dk * (0.5 * ds);
+                float2 vm = driftVel(pMid * flow, t);
+                float2 dm = vm / max(length(vm), 1e-5);
+                float2 pNext = pPrev + dm * ds;
+                float2 pa = uv - pPrev, ba = pNext - pPrev;
+                float hh = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+                float d = length(pa - ba * hh);
+                float sp = (arc + hh * ds) / lineLen;
+                if (d < best) { best = d; bestS = sp; }
+                arc += ds; pPrev = pNext;
+            }
+            float fade = smoothstep(LINE_BEGIN_OFFSET, 1.0, bestS);
+            float aa = 1.5 / uResolution.y + 1e-5;
+            float edge = 1.0 - smoothstep(halfW - aa, halfW, best);
+            float alpha = boost * fade * edge;
+            if (alpha <= 0.0) continue;
+            alpha += HEAD_GLOW * smoothstep(0.8, 1.0, bestS) * edge * boost;
+            accum += alpha;
         }
     }
 
-    float creg = snoise(uv * flow * 0.28 + 3.0) * 0.5 + 0.5;
-    float3 col = ncCyc(creg + 0.03 * t);
-    float3 outc = float3(0.016, 0.012, 0.039) + col * lit * glow;
+    float creg = 0.7 * snoise3(float3(uv * flow * 0.22, t * 0.05))
+               + 0.55 * (uv.x + uv.y) + 0.04 * t;
+    float3 tint = ncCyc(creg);
+    float3 outc = float3(0.016, 0.012, 0.039) + tint * accum * glow;
     float vig = 1.0 - 0.26 * dot(uv0 - 0.5, uv0 - 0.5);
     outc *= vig;
-    outc = outc / (outc + 0.75);
+    outc = outc / (outc + 0.85);
     outc = pow(outc, float3(0.85, 0.85, 0.85));
     return outc;
 }

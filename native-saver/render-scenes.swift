@@ -52,6 +52,10 @@ struct RenderScenes {
             (10, 7, 1.0, 0.5), // Kaleidoscope / Nebula
             (11, 3, 1.0, 0.5), // Caustics / Ocean
             (12, 3, 1.0, 0.5), // Polar Clock / Ocean
+            (13, 10, 1.0, 0.5),// Liquid Chrome / Ice
+            (14, 7, 1.0, 0.5), // Nebula Drift / Nebula
+            (15, 7, 1.2, 0.5), // Fractal Bloom / Nebula
+            (16, 7, 0.5, 0.5), // Flux Drift / Nebula
         ]
 
         for cfg in configs {
@@ -61,6 +65,7 @@ struct RenderScenes {
             u.speed = 0.4
             u.intensity = cfg.intensity
             u.density = cfg.density
+            u.size = 1.0 // representative swirl/size (0 would collapse size-driven scenes)
             u.resolution = SIMD2<Float>(Float(W), Float(H))
             let p = AuroraPalette.all[cfg.palette]
             u.colorA = p.a; u.colorB = p.b; u.colorC = p.c
