@@ -604,4 +604,266 @@ first; everything else is polish.
 - [Beautiful Streamlines for Visualizing 2D Vector Fields](https://www.allnans.com/jekyll/update/2018/04/04/beautiful-streamlines.html)
 - [Illustration of Streamlines, Streaklines and Pathlines (MIT)](https://web.mit.edu/fluids-modules/www/potential_flows/LecturesHTML/lec02/tutorial/tutorial-spsl.html)
 - [2D Navier–Stokes (VisualPDE)](https://visualpde.com/fluids/navier_stokes.html)
+
+---
+
+## 7. Validated prototype (screenshot-verified)
+
+The §6 approach was built as a standalone WebGL2 fragment shader
+(`/tmp/drift-proto/index.html`) and **visually validated** by rendering with
+headless Chrome on the real Metal GPU, then inspecting the PNGs. **5 visual
+iterations.** The final render genuinely reproduces the Flux/Drift
+"combed-fingerprint" look: long overlapping streaks combing around vortices,
+bright in fast flow, collapsing to near-black in calm water, head-tapered, with
+big coherent color regions on black.
+
+**Screenshot showing the result:** `docs/drift-prototype.png` (copied from
+`/tmp/drift-proto/shot_final.png`). Alternate best frames kept alongside it:
+`/tmp/drift-proto/shot5.png` and `/tmp/drift-proto/shot4.png`.
+
+### 7.1 What the iterations taught (key fixes)
+
+1. **v1** (grid=20, len=6, wid=0.30, SEARCH=4, KSTEPS=6, `max`-free additive
+   already): rendered correctly but lines read as **fat sausages/capsules** —
+   too thick, too short, too sparse. Fix direction: finer grid + longer + thinner.
+2. **v2 first try** (SEARCH=7, KSTEPS=10): **black frame (~5 KB PNG)** — GPU
+   watchdog **timeout** from ~225 basepoints × 10 steps. Lesson: keep
+   `(2·SEARCH+1)² × KSTEPS` bounded (~1500 iters/pixel is safe on this GPU; ~2250
+   times out for a single headless frame).
+3. **v2/v3** (grid=42, len=7→6, wid=0.18): got the thin combed streaks — **but a
+   faint square GRID artifact appeared.** Two contributing causes, both fixed:
+   - **Streamlines longer than the search box.** A streak reaches up to
+     `LINE_LENGTH` cells from its basepoint, so **`SEARCH` must be ≥ `LINE_LENGTH`
+     (in cells)** or streaks get clipped at cell boundaries → seams. Set
+     `SEARCH = 7`, `LINE_LENGTH = 7`.
+   - **`fwidth(best)` for the edge AA.** `best` is the distance to a *per-basepoint*
+     streamline, and each basepoint slot `(i,j)` points at a **different** node
+     once `baseId = floor(uv/cell)` increments across a cell seam → `best` is
+     discontinuous there → `fwidth` spikes → a bright grid. **Fix: replace
+     `fwidth(best)` with a fixed screen-space AA `aa = 1.5/uResolution.y`.** This
+     fully removed the grid.
+4. **v4 → v5 (final)**: with the grid gone, tuned for the *lazier, bigger* Flux
+   structure — dropped the fine noise octave weight (`0.50 → 0.38`) and softened
+   `uFlow 2.2 → 2.0` for larger vortices, lengthened lines (`len 6 → 7`), and
+   softened the head bead (`0.3 → 0.22`). Result reproduces robustly across
+   different `uTime` slices.
+
+### 7.2 Exact final constants
+
+```
+// loop bounds (compile-time; keep SEARCH >= ceil(LINE_LENGTH))
+KSTEPS = 7            // streamline polyline segments (RK2 midpoint)
+SEARCH = 7            // basepoint neighbourhood half-width -> (2*7+1)^2 = 225 nodes
+LINE_BEGIN_OFFSET = 0.4
+LINE_VARIANCE     = 0.55
+
+// runtime uniforms (final values)
+uSpeed = 0.3         // time scale (t = uTime * uSpeed)
+uGrid  = 42          // columns across aspect-corrected field (cell = 1/uGrid)
+uFlow  = 2.0         // scales p before noise: larger = smaller/tighter vortices
+uGlow  = 1.5         // additive brightness gain before tone-map
+uLen   = 7.0         // LINE_LENGTH in cells (max streamline arc at full speed)
+uWid   = 0.18        // LINE_WIDTH half-width in cells at full speed
+uGain  = 2.0         // SPEED_GAIN: width_boost = saturate(uGain * |v|)
+uHead  = 0.22        // head-bead extra glow strength
+
+// flow field: curl of 3-octave simplex stream-function
+streamPsi(p,t) = 1.00*snoise(p*0.9,  t*0.05)
+               + 0.65*snoise(p*2.4,  t*0.12)
+               + 0.38*snoise(p*4.8,  t*0.20)
+velocity finite-difference step e = 0.75
+edge AA = 1.5 / uResolution.y     // NOT fwidth(best) — that grids at cell seams
+tone-map: col = col/(col+0.85); col = pow(col, 0.85)
+color: Flux "Original" mode  = clamp(vec3(0.5+v.x, 0.66*(0.5+v.y), 0.5), 0, 1)
+```
+
+### 7.3 Final validated fragment shader (WebGL2, GLSL ES 3.00)
+
+Drop-in `main`-complete fragment shader. Uniforms: `uResolution` (vec2),
+`uTime` (float), plus the tunables above. Uses a fullscreen triangle; no state.
+For MSL/HLSL ports, the only platform-sensitive pieces are the simplex-noise
+helper and the reserved words — `half`, `sample`, `input`, `output`, `filter`
+must stay out of the ported code.
+
+```glsl
+#version 300 es
+precision highp float;
+out vec4 fragColor;
+uniform vec2  uResolution;
+uniform float uTime;
+uniform float uSpeed, uGrid, uFlow, uGlow, uLen, uWid, uGain, uHead;
+
+const float LINE_BEGIN_OFFSET = 0.4;
+const float LINE_VARIANCE     = 0.55;
+const int   KSTEPS = 7;
+const int   SEARCH = 7;
+
+// ---------- Ashima 3D simplex noise ----------
+vec4 permute(vec4 x){ return mod(((x*34.0)+1.0)*x, 289.0); }
+vec4 taylorInvSqrt(vec4 r){ return 1.79284291400159 - 0.85373472095314 * r; }
+float snoise(vec3 v){
+  const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+  const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+  vec3 i  = floor(v + dot(v, C.yyy));
+  vec3 x0 = v - i + dot(i, C.xxx);
+  vec3 g = step(x0.yzx, x0.xyz);
+  vec3 l = 1.0 - g;
+  vec3 i1 = min(g.xyz, l.zxy);
+  vec3 i2 = max(g.xyz, l.zxy);
+  vec3 x1 = x0 - i1 + 1.0*C.xxx;
+  vec3 x2 = x0 - i2 + 2.0*C.xxx;
+  vec3 x3 = x0 - 1.0 + 3.0*C.xxx;
+  i = mod(i, 289.0);
+  vec4 p = permute(permute(permute(
+             i.z + vec4(0.0, i1.z, i2.z, 1.0))
+           + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+           + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+  float n_ = 1.0/7.0;
+  vec3 ns = n_ * D.wyz - D.xzx;
+  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+  vec4 x_ = floor(j * ns.z);
+  vec4 y_ = floor(j - 7.0 * x_);
+  vec4 x = x_ * ns.x + ns.yyyy;
+  vec4 y = y_ * ns.x + ns.yyyy;
+  vec4 h = 1.0 - abs(x) - abs(y);
+  vec4 b0 = vec4(x.xy, y.xy);
+  vec4 b1 = vec4(x.zw, y.zw);
+  vec4 s0 = floor(b0)*2.0 + 1.0;
+  vec4 s1 = floor(b1)*2.0 + 1.0;
+  vec4 sh = -step(h, vec4(0.0));
+  vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+  vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+  vec3 p0 = vec3(a0.xy, h.x);
+  vec3 p1 = vec3(a0.zw, h.y);
+  vec3 p2 = vec3(a1.xy, h.z);
+  vec3 p3 = vec3(a1.zw, h.w);
+  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+  p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+  vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+  m = m*m;
+  return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+}
+
+float hash21(vec2 p){
+  p = fract(p*vec2(123.34, 456.21));
+  p += dot(p, p+45.32);
+  return fract(p.x*p.y);
+}
+
+float streamPsi(vec2 p, float t){
+  float psi  = 1.00 * snoise(vec3(p*0.9, t*0.05));
+        psi += 0.65 * snoise(vec3(p*2.4, t*0.12));
+        psi += 0.38 * snoise(vec3(p*4.8, t*0.20));
+  return psi;
+}
+vec2 velocityAt(vec2 p, float t){
+  const float e = 0.75;
+  float px1 = streamPsi(p+vec2(e,0.0), t), px0 = streamPsi(p-vec2(e,0.0), t);
+  float py1 = streamPsi(p+vec2(0.0,e), t), py0 = streamPsi(p-vec2(0.0,e), t);
+  return vec2(py1-py0, -(px1-px0)) / (2.0*e);   // curl of psi = divergence-free
+}
+vec3 lineColor(vec2 v){
+  return clamp(vec3(0.5+v.x, 0.66*(0.5+v.y), 0.5), 0.0, 1.0);  // Flux "Original"
+}
+
+float streakField(vec2 uv, float t, out vec3 tint){
+  float cell = 1.0/uGrid;
+  vec2 baseId = floor(uv/cell);
+  float accum = 0.0;
+  vec3 colSum = vec3(0.0);
+  for(int j=-SEARCH;j<=SEARCH;j++)
+  for(int i=-SEARCH;i<=SEARCH;i++){
+    vec2 cellId = baseId + vec2(float(i), float(j));
+    vec2 bp = (cellId+0.5)*cell;                       // basepoint = grid node
+    vec2 v0 = velocityAt(bp*uFlow, t);
+    float speed = length(v0);
+    float wb = clamp(uGain*speed, 0.0, 1.0);
+    float boost = smoothstep(0.0,1.0,wb);              // width/opacity from speed
+    if(boost < 0.01) continue;                         // calm water -> no line
+    float rnd = hash21(cellId);
+    float variance = mix(1.0-LINE_VARIANCE, 1.0, rnd);
+    float lineLen = uLen*cell*boost*variance;
+    float halfW = uWid*cell*boost;
+    if(lineLen < 1e-5) continue;
+    if(dot(uv-bp,uv-bp) > (lineLen+halfW)*(lineLen+halfW)) continue;  // AABB reject
+    float ds = lineLen/float(KSTEPS);
+    vec2 pPrev = bp;
+    float best = 1e9, bestS = 0.0, arc = 0.0;
+    for(int k=0;k<KSTEPS;k++){                         // integrate streamline (RK2)
+      vec2 vk = velocityAt(pPrev*uFlow, t);
+      vec2 dk = vk/max(length(vk),1e-5);
+      vec2 pMid = pPrev + dk*(0.5*ds);
+      vec2 vm = velocityAt(pMid*uFlow, t);
+      vec2 dm = vm/max(length(vm),1e-5);
+      vec2 pNext = pPrev + dm*ds;
+      vec2 pa = uv-pPrev, ba = pNext-pPrev;
+      float hh = clamp(dot(pa,ba)/max(dot(ba,ba),1e-6), 0.0, 1.0);
+      float d = length(pa-ba*hh);
+      float s = (arc+hh*ds)/lineLen;                   // arc param 0=base 1=tip
+      if(d<best){ best=d; bestS=s; }
+      arc += ds; pPrev = pNext;
+    }
+    float fade = smoothstep(LINE_BEGIN_OFFSET, 1.0, bestS);   // tail fades out
+    float aa = 1.5/uResolution.y + 1e-5;               // fixed AA (NOT fwidth(best))
+    float edge = 1.0 - smoothstep(halfW-aa, halfW, best);
+    float alpha = boost*fade*edge;
+    if(alpha<=0.0) continue;
+    float head = smoothstep(0.8,1.0,bestS);            // head bead
+    alpha += uHead*head*edge*boost;
+    vec3 lc = lineColor(v0);
+    accum  += alpha;                                   // ADDITIVE accumulation
+    colSum += lc*alpha;
+  }
+  tint = (accum>0.0)? colSum/accum : vec3(0.0);
+  return accum;
+}
+
+void main(){
+  vec2 vUv = gl_FragCoord.xy/uResolution;
+  float aspect = uResolution.x/max(uResolution.y,1.0);
+  vec2 uv = vec2((vUv.x-0.5)*aspect, vUv.y-0.5);        // aspect-corrected, centred
+  float t = uTime*uSpeed;
+  vec3 tint;
+  float b = streakField(uv, t, tint);
+  vec3 col = tint*b*uGlow;
+  col = col/(col+0.85);                                 // soft tone-map (bloom)
+  col = pow(col, vec3(0.85));                           // mild gamma lift
+  fragColor = vec4(col, 1.0);
+}
+```
+
+### 7.4 Honest assessment — how close it got
+
+**Verdict: faithful match.** Both non-negotiables are satisfied and visible in
+the screenshot: (1) streamlines are long enough (7 cells) that dozens overlap and
+**additively** bloom into continuous flowing strokes at convergence points, and
+(2) width + opacity both fall to zero in calm water, so large regions go genuinely
+near-black. The streaks **curve along the flow** (real streamline integration, not
+straight stubs), comb around vortices, taper head-to-tail, and the color forms big
+coherent magenta/green/cyan/blue zones driven by velocity — exactly the Flux
+"Original" wash. This is decisively **not** the old "field of uniform stubs" and
+**not** a "marbled smear."
+
+**What still differs from true Flux (minor):**
+- **No inertia/overshoot.** Flux's damped-spring endpoint ODE gives lag, swing and
+  a woven "living" quality frame-to-frame. The stateless port recovers smoothness
+  via slow field evolution but not the overshoot. (Streamlines instead curve *with*
+  the flow, which arguably looks cleaner.) Motion smoothness must be re-verified
+  when animated in the real engine — screenshots validate a single frame.
+- **Streaks are ~7 cells, Flux is ~10–30.** Longer lines need `SEARCH ≥ LINE_LENGTH`
+  and cost grows as `SEARCH²`; 7 was the sweet spot before GPU-timeout risk on a
+  single headless frame. In the real per-frame engine (not virtual-time headless)
+  the watchdog budget differs, so `uLen`/`SEARCH` can likely be pushed to 9–10 for
+  even longer streaks — tune on-device.
+- **Head bead is approximated** by a `head` glow term rather than Flux's separate
+  endpoint sprite; reads fine but is slightly less round.
+
+**Porting notes for Drift.ts (GLSL/MSL/HLSL):** keep `SEARCH ≥ ceil(uLen)`; never
+use `fwidth` of the per-streamline distance for the edge AA (it grids at cell
+seams — use the fixed `1.5/resolution.y`); keep the field **un-normalized** so
+`|velocity|` drives width/length; keep blending **additive** (accumulate, never
+`max()`); watch the reserved words `half`/`sample`/`input`/`output`/`filter` in
+MSL/HLSL. Performance scales as `(2·SEARCH+1)² × KSTEPS × 4` noise evals/pixel —
+lean on the `boost<0.01` early-out and the AABB reject, which make calm/empty
+regions nearly free.
 ```
