@@ -1,6 +1,6 @@
 [package]
 name = "noctura-scr"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Noctura — native Windows Direct3D 11 screensaver (.scr)"
 
