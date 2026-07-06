@@ -1,6 +1,6 @@
 # Noctura
 
-**A cross-platform animated screensaver — 17 GPU-rendered scenes, 13 color palettes — for macOS and Windows.**
+**A cross-platform animated screensaver — 18 GPU-rendered scenes, 13 color palettes — for macOS and Windows.**
 
 Noctura runs the *same* scenes everywhere, three ways: a desktop gallery app, a native macOS `.saver`, and a native Windows `.scr`. Every scene is a real-time GPU fragment shader (WebGL on the web build, Metal on macOS, Direct3D 11 on Windows), kept at pixel-level parity across all three.
 
@@ -32,7 +32,7 @@ Grab the latest build from the [**Releases**](../../releases/latest) page.
 
 ## ✨ Scenes
 
-17 scenes — **Flux Drift** · Aurora Drift · Northern Lights · Nebula Drift · Fractal Bloom · Liquid Chrome · Caustics · Plasma Field · Kaleidoscope · Black Hole · Hyperspace Tunnel · Deep Space · Particle Drift · Fireflies · Matrix Rain · Synthwave · Polar Clock
+18 scenes — **Flux Drift** · Aurora Drift · Northern Lights · Nebula Drift · Fractal Bloom · Liquid Chrome · Caustics · Plasma Field · Kaleidoscope · Black Hole · Hyperspace Tunnel · Deep Space · Particle Drift · **Particle Swarm** · Fireflies · Matrix Rain · Synthwave · Polar Clock
 
 **Flux Drift** is the newest scene: a faithful port of [sandydoo/Flux](https://github.com/sandydoo/flux) driven by a real GPU **Stable-Fluids** simulation — thousands of luminous blades combed along an evolving velocity field of swirling vortices.
 
@@ -52,6 +52,7 @@ Each scene below is shown in a **different one of the 13 color Styles**, to hint
 <img src="screenshots/scenes/HyperspaceTunnel.png" width="32%" alt="Hyperspace Tunnel — Gold style">
 <img src="screenshots/scenes/DeepSpace.png" width="32%" alt="Deep Space — Deep Space style">
 <img src="screenshots/scenes/ParticleDrift.png" width="32%" alt="Particle Drift — Monochrome style">
+<img src="screenshots/scenes/ParticleSwarm.png" width="32%" alt="Particle Swarm — Gold style">
 <img src="screenshots/scenes/Fireflies.png" width="32%" alt="Fireflies — Gold style">
 <img src="screenshots/scenes/MatrixRain.png" width="32%" alt="Matrix Rain — Borealis style">
 <img src="screenshots/scenes/Synthwave.png" width="32%" alt="Synthwave — Ember style">
