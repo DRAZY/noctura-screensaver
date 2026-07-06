@@ -28,11 +28,12 @@ use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_10_0,
     D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
-    ID3DBlob,
+    D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP, ID3DBlob,
 };
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_MODE_DESC, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32_FLOAT,
+    DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_MODE_DESC, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory, IDXGIFactory6, IDXGISurface, IDXGISwapChain,
@@ -63,7 +64,510 @@ pub struct Uniforms {
 
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 112);
 
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct FluidParams {
+    amount: f32,
+    dissipation: f32,
+    alpha: f32,
+    r_beta: f32,
+    delta_time: f32,
+    pad0: f32,
+    texel: [f32; 2],
+    ch_scale: [f32; 4],
+    ch_mult: [f32; 4],
+    ch_offset: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<FluidParams>() == 80);
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LineParams {
+    grid_size: [f32; 2],
+    aspect: f32,
+    zoom: f32,
+    line_length: f32,
+    line_variance: f32,
+    vel_gain: f32,
+    delta_time: f32,
+    line_width: f32,
+    begin_offset: f32,
+    glow: f32,
+    time: f32,
+    num_lines: u32,
+    gx: u32,
+    pad: [f32; 2],
+    color_a: [f32; 4],
+    color_b: [f32; 4],
+    color_c: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<LineParams>() == 112);
+
 const SHADER_SRC: &str = include_str!("shader.hlsl");
+const FLUX_SRC: &str = include_str!("flux.hlsl");
+
+const GX: u32 = 128;
+const GY: u32 = 72;
+const NUM_LINES: u32 = 9216;
+const FLUID: u32 = 128;
+const TIME_SCALE: f32 = 0.115;
+const VEL_GAIN: f32 = 10.0;
+const DISSIPATION: f32 = 2.0;
+const BASE_LINE_LENGTH: f32 = 0.6;
+const VISCOSITY: f32 = 5.0;
+const DIFFUSE_ITERS: usize = 3;
+const PRESSURE_ITERS: usize = 19;
+const STEP: f32 = 1.0 / 60.0;
+
+struct Tex {
+    // Ownership anchor: keep the resource alive for the struct's lifetime. The RTV
+    // and SRV also hold references, so this is never read directly — hence allow.
+    #[allow(dead_code)]
+    tex: ID3D11Texture2D,
+    rtv: ID3D11RenderTargetView,
+    srv: ID3D11ShaderResourceView,
+}
+
+impl Tex {
+    unsafe fn make(device: &ID3D11Device, w: u32, h: u32, format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT) -> Result<Tex> {
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: w,
+            Height: h,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+            ..Default::default()
+        };
+        let mut tex: Option<ID3D11Texture2D> = None;
+        device.CreateTexture2D(&desc, None, Some(&mut tex))?;
+        let tex = tex.ok_or_else(Error::from_win32)?;
+        let mut rtv: Option<ID3D11RenderTargetView> = None;
+        device.CreateRenderTargetView(&tex, None, Some(&mut rtv))?;
+        let mut srv: Option<ID3D11ShaderResourceView> = None;
+        device.CreateShaderResourceView(&tex, None, Some(&mut srv))?;
+        Ok(Tex {
+            tex,
+            rtv: rtv.ok_or_else(Error::from_win32)?,
+            srv: srv.ok_or_else(Error::from_win32)?,
+        })
+    }
+}
+
+struct FluxFluid {
+    fs_vs: ID3D11VertexShader,
+    noise_ps: ID3D11PixelShader,
+    advect_ps: ID3D11PixelShader,
+    adjust_ps: ID3D11PixelShader,
+    diffuse_ps: ID3D11PixelShader,
+    inject_ps: ID3D11PixelShader,
+    divergence_ps: ID3D11PixelShader,
+    pressure_ps: ID3D11PixelShader,
+    subtract_ps: ID3D11PixelShader,
+    spring_ps: ID3D11PixelShader,
+    line_vs: ID3D11VertexShader,
+    line_ps: ID3D11PixelShader,
+    vel_a: Tex,
+    vel_b: Tex,
+    noise_t: Tex,
+    fwd_t: Tex,
+    rev_t: Tex,
+    prs_a: Tex,
+    prs_b: Tex,
+    div_t: Tex,
+    state_a: Tex,
+    state_b: Tex,
+    sampler: ID3D11SamplerState,
+    add_blend: ID3D11BlendState,
+    fluid_cb: ID3D11Buffer,
+    line_cb: ID3D11Buffer,
+    sim_time: f32,
+    last_time: f32,
+    accumulator: f32,
+    warmed_up: bool,
+}
+
+impl FluxFluid {
+    fn new(device: &ID3D11Device, vs_target: PCSTR, ps_target: PCSTR) -> Option<FluxFluid> {
+        unsafe {
+            (|| -> Result<FluxFluid> {
+                let make_vs = |entry: PCSTR, target: PCSTR| -> Result<ID3D11VertexShader> {
+                    let blob = compile_src(FLUX_SRC, entry, target)?;
+                    let bytes = std::slice::from_raw_parts(
+                        blob.GetBufferPointer() as *const u8,
+                        blob.GetBufferSize(),
+                    );
+                    let mut sh = None;
+                    device.CreateVertexShader(bytes, None, Some(&mut sh))?;
+                    sh.ok_or_else(Error::from_win32)
+                };
+                let make_ps = |entry: PCSTR, target: PCSTR| -> Result<ID3D11PixelShader> {
+                    let blob = compile_src(FLUX_SRC, entry, target)?;
+                    let bytes = std::slice::from_raw_parts(
+                        blob.GetBufferPointer() as *const u8,
+                        blob.GetBufferSize(),
+                    );
+                    let mut sh = None;
+                    device.CreatePixelShader(bytes, None, Some(&mut sh))?;
+                    sh.ok_or_else(Error::from_win32)
+                };
+
+                let fs_vs = make_vs(s!("fs_vertex"), vs_target)?;
+                let line_vs = make_vs(s!("line_vertex"), vs_target)?;
+                let noise_ps = make_ps(s!("noise_frag"), ps_target)?;
+                let advect_ps = make_ps(s!("advect_frag"), ps_target)?;
+                let adjust_ps = make_ps(s!("adjust_frag"), ps_target)?;
+                let diffuse_ps = make_ps(s!("diffuse_frag"), ps_target)?;
+                let inject_ps = make_ps(s!("inject_frag"), ps_target)?;
+                let divergence_ps = make_ps(s!("divergence_frag"), ps_target)?;
+                let pressure_ps = make_ps(s!("pressure_frag"), ps_target)?;
+                let subtract_ps = make_ps(s!("subtract_frag"), ps_target)?;
+                let spring_ps = make_ps(s!("spring_frag"), ps_target)?;
+                let line_ps = make_ps(s!("line_fragment"), ps_target)?;
+
+                let vel_a = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT)?;
+                let vel_b = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT)?;
+                let noise_t = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT)?;
+                let fwd_t = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT)?;
+                let rev_t = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT)?;
+                let prs_a = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32_FLOAT)?;
+                let prs_b = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32_FLOAT)?;
+                let div_t = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32_FLOAT)?;
+                let state_a = Tex::make(device, GX, GY, DXGI_FORMAT_R32G32B32A32_FLOAT)?;
+                let state_b = Tex::make(device, GX, GY, DXGI_FORMAT_R32G32B32A32_FLOAT)?;
+
+                let sampler_desc = D3D11_SAMPLER_DESC {
+                    Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+                    AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    ComparisonFunc: D3D11_COMPARISON_NEVER,
+                    MinLOD: 0.0,
+                    MaxLOD: D3D11_FLOAT32_MAX,
+                    ..Default::default()
+                };
+                let mut sampler = None;
+                device.CreateSamplerState(&sampler_desc, Some(&mut sampler))?;
+                let sampler = sampler.ok_or_else(Error::from_win32)?;
+
+                let mut blend_desc = D3D11_BLEND_DESC::default();
+                blend_desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
+                    BlendEnable: TRUE,
+                    SrcBlend: D3D11_BLEND_ONE,
+                    DestBlend: D3D11_BLEND_ONE,
+                    BlendOp: D3D11_BLEND_OP_ADD,
+                    SrcBlendAlpha: D3D11_BLEND_ONE,
+                    DestBlendAlpha: D3D11_BLEND_ONE,
+                    BlendOpAlpha: D3D11_BLEND_OP_ADD,
+                    RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+                };
+                let mut add_blend = None;
+                device.CreateBlendState(&blend_desc, Some(&mut add_blend))?;
+                let add_blend = add_blend.ok_or_else(Error::from_win32)?;
+
+                let fluid_desc = D3D11_BUFFER_DESC {
+                    ByteWidth: std::mem::size_of::<FluidParams>() as u32,
+                    Usage: D3D11_USAGE_DYNAMIC,
+                    BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
+                    CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
+                    ..Default::default()
+                };
+                let mut fluid_cb = None;
+                device.CreateBuffer(&fluid_desc, None, Some(&mut fluid_cb))?;
+                let fluid_cb = fluid_cb.ok_or_else(Error::from_win32)?;
+
+                let line_desc = D3D11_BUFFER_DESC {
+                    ByteWidth: std::mem::size_of::<LineParams>() as u32,
+                    Usage: D3D11_USAGE_DYNAMIC,
+                    BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
+                    CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
+                    ..Default::default()
+                };
+                let mut line_cb = None;
+                device.CreateBuffer(&line_desc, None, Some(&mut line_cb))?;
+                let line_cb = line_cb.ok_or_else(Error::from_win32)?;
+
+                Ok(FluxFluid {
+                    fs_vs,
+                    noise_ps,
+                    advect_ps,
+                    adjust_ps,
+                    diffuse_ps,
+                    inject_ps,
+                    divergence_ps,
+                    pressure_ps,
+                    subtract_ps,
+                    spring_ps,
+                    line_vs,
+                    line_ps,
+                    vel_a,
+                    vel_b,
+                    noise_t,
+                    fwd_t,
+                    rev_t,
+                    prs_a,
+                    prs_b,
+                    div_t,
+                    state_a,
+                    state_b,
+                    sampler,
+                    add_blend,
+                    fluid_cb,
+                    line_cb,
+                    sim_time: 0.0,
+                    last_time: -1.0,
+                    accumulator: 0.0,
+                    warmed_up: false,
+                })
+            })()
+            .map_err(|e| {
+                crate::log::line(&format!("FluxFluid::new failed: {e}"));
+                e
+            })
+            .ok()
+        }
+    }
+
+    unsafe fn upload_fluid(&self, ctx: &ID3D11DeviceContext, p: &FluidParams) {
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        if ctx
+            .Map(&self.fluid_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))
+            .is_ok()
+        {
+            std::ptr::copy_nonoverlapping(
+                p as *const FluidParams as *const u8,
+                mapped.pData as *mut u8,
+                std::mem::size_of::<FluidParams>(),
+            );
+            ctx.Unmap(&self.fluid_cb, 0);
+        }
+    }
+
+    unsafe fn upload_line(&self, ctx: &ID3D11DeviceContext, p: &LineParams) {
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        if ctx
+            .Map(&self.line_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))
+            .is_ok()
+        {
+            std::ptr::copy_nonoverlapping(
+                p as *const LineParams as *const u8,
+                mapped.pData as *mut u8,
+                std::mem::size_of::<LineParams>(),
+            );
+            ctx.Unmap(&self.line_cb, 0);
+        }
+    }
+
+    unsafe fn set_viewport(ctx: &ID3D11DeviceContext, w: u32, h: u32) {
+        ctx.RSSetViewports(Some(&[D3D11_VIEWPORT {
+            Width: w as f32,
+            Height: h as f32,
+            MinDepth: 0.0,
+            MaxDepth: 1.0,
+            ..Default::default()
+        }]));
+    }
+
+    unsafe fn fluid_pass(
+        &self,
+        ctx: &ID3D11DeviceContext,
+        ps: &ID3D11PixelShader,
+        target: &Tex,
+        inputs: &[Option<ID3D11ShaderResourceView>],
+        p: &FluidParams,
+    ) {
+        Self::set_viewport(ctx, FLUID, FLUID);
+        ctx.OMSetRenderTargets(Some(&[Some(target.rtv.clone())]), None);
+        self.upload_fluid(ctx, p);
+        ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
+        ctx.PSSetShaderResources(0, Some(inputs));
+        ctx.PSSetConstantBuffers(1, Some(&[Some(self.fluid_cb.clone())]));
+        ctx.VSSetShader(&self.fs_vs, None);
+        ctx.PSSetShader(ps, None);
+        ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx.Draw(3, 0);
+    }
+
+    unsafe fn fluid_step(&mut self, ctx: &ID3D11DeviceContext, dt: f32, noise_mult: f32) {
+        let texel = [1.0 / FLUID as f32, 1.0 / FLUID as f32];
+        let srv = |t: &Tex| Some(t.srv.clone());
+
+        let mut p = FluidParams {
+            delta_time: dt,
+            texel,
+            ..Default::default()
+        };
+
+        p.ch_scale = [2.5, 15.0, 30.0, 0.0];
+        p.ch_mult = [1.0 * noise_mult, 0.7 * noise_mult, 0.5 * noise_mult, 0.0];
+        p.ch_offset = [
+            0.0015 * self.sim_time * 60.0,
+            0.009 * self.sim_time * 60.0,
+            0.018 * self.sim_time * 60.0,
+            0.0,
+        ];
+        self.fluid_pass(ctx, &self.noise_ps, &self.noise_t, &[], &p);
+
+        p.dissipation = DISSIPATION;
+        p.amount = dt;
+        let advect_inputs = [srv(&self.vel_a)];
+        self.fluid_pass(ctx, &self.advect_ps, &self.fwd_t, &advect_inputs, &p);
+
+        p.amount = -dt;
+        let rev_inputs = [srv(&self.vel_a)];
+        self.fluid_pass(ctx, &self.advect_ps, &self.rev_t, &rev_inputs, &p);
+
+        let adjust_inputs = [srv(&self.vel_a), srv(&self.fwd_t), srv(&self.rev_t)];
+        self.fluid_pass(ctx, &self.adjust_ps, &self.vel_b, &adjust_inputs, &p);
+        std::mem::swap(&mut self.vel_a, &mut self.vel_b);
+
+        let center = 1.0 / (VISCOSITY * dt);
+        p.alpha = center;
+        p.r_beta = 1.0 / (4.0 + center);
+        for _ in 0..DIFFUSE_ITERS {
+            let diffuse_inputs = [srv(&self.vel_a)];
+            self.fluid_pass(ctx, &self.diffuse_ps, &self.vel_b, &diffuse_inputs, &p);
+            std::mem::swap(&mut self.vel_a, &mut self.vel_b);
+        }
+
+        let inject_inputs = [srv(&self.vel_a), srv(&self.noise_t)];
+        self.fluid_pass(ctx, &self.inject_ps, &self.vel_b, &inject_inputs, &p);
+        std::mem::swap(&mut self.vel_a, &mut self.vel_b);
+
+        let divergence_inputs = [srv(&self.vel_a)];
+        self.fluid_pass(ctx, &self.divergence_ps, &self.div_t, &divergence_inputs, &p);
+
+        p.alpha = -1.0;
+        p.r_beta = 0.25;
+        for _ in 0..PRESSURE_ITERS {
+            let pressure_inputs = [srv(&self.prs_a), srv(&self.div_t)];
+            self.fluid_pass(ctx, &self.pressure_ps, &self.prs_b, &pressure_inputs, &p);
+            std::mem::swap(&mut self.prs_a, &mut self.prs_b);
+        }
+
+        let subtract_inputs = [srv(&self.vel_a), srv(&self.prs_a)];
+        self.fluid_pass(ctx, &self.subtract_ps, &self.vel_b, &subtract_inputs, &p);
+        std::mem::swap(&mut self.vel_a, &mut self.vel_b);
+    }
+
+    unsafe fn spring_step(&mut self, ctx: &ID3D11DeviceContext, line: &LineParams) {
+        Self::set_viewport(ctx, GX, GY);
+        ctx.OMSetRenderTargets(Some(&[Some(self.state_b.rtv.clone())]), None);
+        self.upload_line(ctx, line);
+        ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
+        ctx.PSSetShaderResources(
+            0,
+            Some(&[Some(self.vel_a.srv.clone()), Some(self.state_a.srv.clone())]),
+        );
+        ctx.PSSetConstantBuffers(2, Some(&[Some(self.line_cb.clone())]));
+        ctx.VSSetShader(&self.fs_vs, None);
+        ctx.PSSetShader(&self.spring_ps, None);
+        ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx.Draw(3, 0);
+        std::mem::swap(&mut self.state_a, &mut self.state_b);
+    }
+
+    unsafe fn encode(&mut self, ctx: &ID3D11DeviceContext, surf: &Surface, u: &Uniforms) {
+        let now = u.time;
+        let real_delta = if self.last_time < 0.0 {
+            1.0 / 60.0
+        } else {
+            (now - self.last_time).clamp(0.0, 0.25)
+        };
+        self.last_time = now;
+
+        let noise_mult = 0.75 + 0.30 * (u.size - 0.85) / 0.85;
+        let mut line = LineParams {
+            grid_size: [GX as f32, GY as f32],
+            aspect: u.resolution[0] / u.resolution[1].max(1.0),
+            zoom: 1.6,
+            line_length: BASE_LINE_LENGTH * (1.0 + 0.5 * (u.size - 0.85)),
+            line_variance: 0.45,
+            vel_gain: VEL_GAIN,
+            delta_time: STEP,
+            line_width: 0.011,
+            begin_offset: 0.4,
+            glow: 1.0 + u.intensity,
+            time: self.sim_time,
+            num_lines: NUM_LINES,
+            gx: GX,
+            pad: [0.0, 0.0],
+            color_a: u.color_a,
+            color_b: u.color_b,
+            color_c: u.color_c,
+        };
+
+        if !self.warmed_up {
+            self.warmed_up = true;
+            for t in [
+                &self.vel_a,
+                &self.vel_b,
+                &self.noise_t,
+                &self.fwd_t,
+                &self.rev_t,
+                &self.prs_a,
+                &self.prs_b,
+                &self.div_t,
+                &self.state_a,
+                &self.state_b,
+            ] {
+                ctx.ClearRenderTargetView(&t.rtv, &[0.0, 0.0, 0.0, 0.0]);
+            }
+            for _ in 0..150 {
+                self.sim_time += STEP;
+                self.fluid_step(ctx, STEP, noise_mult);
+            }
+        }
+
+        self.accumulator += real_delta * TIME_SCALE * (u.speed / 0.3);
+        let mut steps = 0;
+        while self.accumulator >= STEP && steps < 4 {
+            self.sim_time += STEP;
+            if self.sim_time > 1000.0 {
+                self.sim_time -= 1000.0;
+            }
+            self.fluid_step(ctx, STEP, noise_mult);
+            line.delta_time = STEP;
+            self.spring_step(ctx, &line);
+            self.accumulator -= STEP;
+            steps += 1;
+        }
+        if self.accumulator > STEP {
+            self.accumulator = STEP;
+        }
+        line.time = self.sim_time;
+
+        Self::set_viewport(ctx, surf.bb_w, surf.bb_h);
+        ctx.OMSetRenderTargets(Some(&[Some(surf.rtv.clone())]), None);
+        ctx.ClearRenderTargetView(&surf.rtv, &[0.02, 0.016, 0.047, 1.0]);
+        ctx.OMSetBlendState(Some(&self.add_blend), None, 0xffffffff);
+        self.upload_line(ctx, &line);
+        ctx.VSSetShaderResources(
+            0,
+            Some(&[Some(self.state_a.srv.clone()), Some(self.vel_a.srv.clone())]),
+        );
+        ctx.VSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
+        let line_cbs = [Some(self.line_cb.clone())];
+        ctx.VSSetConstantBuffers(2, Some(&line_cbs));
+        ctx.PSSetConstantBuffers(2, Some(&line_cbs));
+        ctx.VSSetShader(&self.line_vs, None);
+        ctx.PSSetShader(&self.line_ps, None);
+        ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        let draw_count = ((NUM_LINES as f32) * (0.65 + 0.35 * u.density))
+            .floor()
+            .max(1.0) as u32;
+        ctx.DrawInstanced(4, draw_count, 0, 0);
+
+        ctx.OMSetBlendState(None, None, 0xffffffff);
+        ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx.VSSetShaderResources(0, Some(&[None, None]));
+        ctx.PSSetShaderResources(0, Some(&[None, None, None]));
+    }
+}
 
 /// Shared Direct3D device, compiled shaders, and constant buffer. Also owns the
 /// Direct2D + DirectWrite factories used to draw the clock overlay on top of the
@@ -78,6 +582,9 @@ pub struct Gfx {
     raster: ID3D11RasterizerState,
     d2d: ID2D1Factory,
     dwrite: IDWriteFactory,
+    flux: std::cell::RefCell<Option<FluxFluid>>,
+    flux_tried: std::cell::Cell<bool>,
+    flux_sm5: bool,
 }
 
 /// One frame's clock overlay request: the formatted strings plus the chosen
@@ -103,12 +610,12 @@ pub struct Surface {
     pub bb_h: u32,
 }
 
-unsafe fn compile(entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
+unsafe fn compile_src(src: &str, entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
     let mut blob: Option<ID3DBlob> = None;
     let mut errors: Option<ID3DBlob> = None;
     let hr = D3DCompile(
-        SHADER_SRC.as_ptr() as *const _,
-        SHADER_SRC.len(),
+        src.as_ptr() as *const _,
+        src.len(),
         PCSTR::null(),
         None,
         None,
@@ -137,6 +644,10 @@ unsafe fn compile(entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
     }
     hr?;
     blob.ok_or_else(|| Error::from_win32())
+}
+
+unsafe fn compile(entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
+    compile_src(SHADER_SRC, entry, target)
 }
 
 /// The DXGI adapter with the lowest power draw (the integrated GPU on a dual-GPU
@@ -308,6 +819,9 @@ impl Gfx {
                 raster: raster.ok_or_else(Error::from_win32)?,
                 d2d,
                 dwrite,
+                flux: std::cell::RefCell::new(None),
+                flux_tried: std::cell::Cell::new(false),
+                flux_sm5: fl11,
             })
         }
     }
@@ -405,16 +919,34 @@ impl Gfx {
             };
             self.context.RSSetViewports(Some(&[vp]));
             self.context.RSSetState(&self.raster);
-            let clear = [0.0f32, 0.0, 0.0, 1.0];
-            self.context.ClearRenderTargetView(&surf.rtv, &clear);
-            self.context.VSSetShader(&self.vs, None);
-            self.context.PSSetShader(&self.ps, None);
-            let cbs = [Some(self.cbuffer.clone())];
-            self.context.VSSetConstantBuffers(0, Some(&cbs));
-            self.context.PSSetConstantBuffers(0, Some(&cbs));
-            self.context
-                .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            self.context.Draw(3, 0);
+            let mut scene_drawn = false;
+            if (u.scene + 0.5) as i32 == 16 {
+                if !self.flux_tried.get() {
+                    self.flux_tried.set(true);
+                    let targets = if self.flux_sm5 {
+                        (s!("vs_5_0"), s!("ps_5_0"))
+                    } else {
+                        (s!("vs_4_0"), s!("ps_4_0"))
+                    };
+                    *self.flux.borrow_mut() = FluxFluid::new(&self.device, targets.0, targets.1);
+                }
+                if let Some(flux) = self.flux.borrow_mut().as_mut() {
+                    flux.encode(&self.context, surf, u);
+                    scene_drawn = true;
+                }
+            }
+            if !scene_drawn {
+                let clear = [0.0f32, 0.0, 0.0, 1.0];
+                self.context.ClearRenderTargetView(&surf.rtv, &clear);
+                self.context.VSSetShader(&self.vs, None);
+                self.context.PSSetShader(&self.ps, None);
+                let cbs = [Some(self.cbuffer.clone())];
+                self.context.VSSetConstantBuffers(0, Some(&cbs));
+                self.context.PSSetConstantBuffers(0, Some(&cbs));
+                self.context
+                    .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                self.context.Draw(3, 0);
+            }
 
             // Clock overlay. Unbind the back buffer from D3D and flush so the
             // scene is committed before Direct2D (a separate device) paints text
