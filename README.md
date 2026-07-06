@@ -36,27 +36,29 @@ Grab the latest build from the [**Releases**](../../releases/latest) page.
 
 **Flux Drift** is the newest scene: a faithful port of [sandydoo/Flux](https://github.com/sandydoo/flux) driven by a real GPU **Stable-Fluids** simulation — thousands of luminous blades combed along an evolving velocity field of swirling vortices.
 
+Each scene below is shown in a **different one of the 13 color Styles**, to hint at the range — every scene works with every palette.
+
 <p>
-<img src="screenshots/scenes/FluxDrift.png" width="32%" alt="Flux Drift">
-<img src="screenshots/scenes/AuroraDrift.png" width="32%" alt="Aurora Drift">
-<img src="screenshots/scenes/NorthernLights.png" width="32%" alt="Northern Lights">
-<img src="screenshots/scenes/NebulaDrift.png" width="32%" alt="Nebula Drift">
-<img src="screenshots/scenes/FractalBloom.png" width="32%" alt="Fractal Bloom">
-<img src="screenshots/scenes/LiquidChrome.png" width="32%" alt="Liquid Chrome">
-<img src="screenshots/scenes/Caustics.png" width="32%" alt="Caustics">
-<img src="screenshots/scenes/PlasmaField.png" width="32%" alt="Plasma Field">
-<img src="screenshots/scenes/Kaleidoscope.png" width="32%" alt="Kaleidoscope">
-<img src="screenshots/scenes/BlackHole.png" width="32%" alt="Black Hole">
-<img src="screenshots/scenes/HyperspaceTunnel.png" width="32%" alt="Hyperspace Tunnel">
-<img src="screenshots/scenes/DeepSpace.png" width="32%" alt="Deep Space">
-<img src="screenshots/scenes/ParticleDrift.png" width="32%" alt="Particle Drift">
-<img src="screenshots/scenes/Fireflies.png" width="32%" alt="Fireflies">
-<img src="screenshots/scenes/MatrixRain.png" width="32%" alt="Matrix Rain">
-<img src="screenshots/scenes/Synthwave.png" width="32%" alt="Synthwave">
-<img src="screenshots/scenes/PolarClock.png" width="32%" alt="Polar Clock">
+<img src="screenshots/scenes/FluxDrift.png" width="32%" alt="Flux Drift — Aurora style">
+<img src="screenshots/scenes/AuroraDrift.png" width="32%" alt="Aurora Drift — Borealis style">
+<img src="screenshots/scenes/NorthernLights.png" width="32%" alt="Northern Lights — Mint style">
+<img src="screenshots/scenes/NebulaDrift.png" width="32%" alt="Nebula Drift — Nebula style">
+<img src="screenshots/scenes/FractalBloom.png" width="32%" alt="Fractal Bloom — Sunset style">
+<img src="screenshots/scenes/LiquidChrome.png" width="32%" alt="Liquid Chrome — Ice style">
+<img src="screenshots/scenes/Caustics.png" width="32%" alt="Caustics — Ocean style">
+<img src="screenshots/scenes/PlasmaField.png" width="32%" alt="Plasma Field — Synthwave style">
+<img src="screenshots/scenes/Kaleidoscope.png" width="32%" alt="Kaleidoscope — Rose style">
+<img src="screenshots/scenes/BlackHole.png" width="32%" alt="Black Hole — Ember style">
+<img src="screenshots/scenes/HyperspaceTunnel.png" width="32%" alt="Hyperspace Tunnel — Gold style">
+<img src="screenshots/scenes/DeepSpace.png" width="32%" alt="Deep Space — Deep Space style">
+<img src="screenshots/scenes/ParticleDrift.png" width="32%" alt="Particle Drift — Monochrome style">
+<img src="screenshots/scenes/Fireflies.png" width="32%" alt="Fireflies — Gold style">
+<img src="screenshots/scenes/MatrixRain.png" width="32%" alt="Matrix Rain — Borealis style">
+<img src="screenshots/scenes/Synthwave.png" width="32%" alt="Synthwave — Ember style">
+<img src="screenshots/scenes/PolarClock.png" width="32%" alt="Polar Clock — Ice style">
 </p>
 
-Each scene is tunable: **Style** (13 palettes), **Speed**, **Intensity**, **Density**, **Size**, and a **Performance** mode (Auto / Full / Balanced / Power Saver) that scales render resolution to stay smooth on any GPU.
+Each scene is tunable: **Style** (13 palettes — Aurora, Borealis, Deep Space, Ocean, Ember, Synthwave, Sunset, Nebula, Mint, Gold, Ice, Rose, Monochrome), **Speed**, **Intensity**, **Density**, **Size**, and a **Performance** mode (Auto / Full / Balanced / Power Saver) that scales render resolution to stay smooth on any GPU.
 
 ### 🕒 Clock & lock
 
