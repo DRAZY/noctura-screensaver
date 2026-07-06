@@ -1,10 +1,10 @@
 # Noctura
 
-**A cross-platform animated screensaver — 16 GPU-rendered scenes, 13 color palettes — for macOS and Windows.**
+**A cross-platform animated screensaver — 17 GPU-rendered scenes, 13 color palettes — for macOS and Windows.**
 
 Noctura runs the *same* scenes everywhere, three ways: a desktop gallery app, a native macOS `.saver`, and a native Windows `.scr`. Every scene is a real-time GPU fragment shader (WebGL on the web build, Metal on macOS, Direct3D 11 on Windows), kept at pixel-level parity across all three.
 
-![Northern Lights](screenshots/native-1-NorthernLights.png)
+![Flux Drift](screenshots/scenes/FluxDrift.png)
 
 ---
 
@@ -32,18 +32,28 @@ Grab the latest build from the [**Releases**](../../releases/latest) page.
 
 ## ✨ Scenes
 
-Aurora Drift · Northern Lights · Deep Space · Particle Drift · Plasma Field · Matrix Rain · Fireflies · Black Hole · Hyperspace Tunnel · Synthwave · Kaleidoscope · Caustics · Polar Clock · **Liquid Chrome** · **Nebula Drift** · **Fractal Bloom**
+17 scenes — **Flux Drift** · Aurora Drift · Northern Lights · Nebula Drift · Fractal Bloom · Liquid Chrome · Caustics · Plasma Field · Kaleidoscope · Black Hole · Hyperspace Tunnel · Deep Space · Particle Drift · Fireflies · Matrix Rain · Synthwave · Polar Clock
+
+**Flux Drift** is the newest scene: a faithful port of [sandydoo/Flux](https://github.com/sandydoo/flux) driven by a real GPU **Stable-Fluids** simulation — thousands of luminous blades combed along an evolving velocity field of swirling vortices.
 
 <p>
-<img src="screenshots/native-13-LiquidChrome.png" width="32%" alt="Liquid Chrome">
-<img src="screenshots/native-14-NebulaDrift.png" width="32%" alt="Nebula Drift">
-<img src="screenshots/native-15-FractalBloom.png" width="32%" alt="Fractal Bloom">
-<img src="screenshots/native-7-BlackHole.png" width="32%" alt="Black Hole">
-<img src="screenshots/native-5-MatrixRain.png" width="32%" alt="Matrix Rain">
-<img src="screenshots/native-8-HyperspaceTunnel.png" width="32%" alt="Hyperspace Tunnel">
-<img src="screenshots/native-4-PlasmaField.png" width="32%" alt="Plasma Field">
-<img src="screenshots/native-10-Kaleidoscope.png" width="32%" alt="Kaleidoscope">
-<img src="screenshots/native-2-DeepSpace.png" width="32%" alt="Deep Space">
+<img src="screenshots/scenes/FluxDrift.png" width="32%" alt="Flux Drift">
+<img src="screenshots/scenes/AuroraDrift.png" width="32%" alt="Aurora Drift">
+<img src="screenshots/scenes/NorthernLights.png" width="32%" alt="Northern Lights">
+<img src="screenshots/scenes/NebulaDrift.png" width="32%" alt="Nebula Drift">
+<img src="screenshots/scenes/FractalBloom.png" width="32%" alt="Fractal Bloom">
+<img src="screenshots/scenes/LiquidChrome.png" width="32%" alt="Liquid Chrome">
+<img src="screenshots/scenes/Caustics.png" width="32%" alt="Caustics">
+<img src="screenshots/scenes/PlasmaField.png" width="32%" alt="Plasma Field">
+<img src="screenshots/scenes/Kaleidoscope.png" width="32%" alt="Kaleidoscope">
+<img src="screenshots/scenes/BlackHole.png" width="32%" alt="Black Hole">
+<img src="screenshots/scenes/HyperspaceTunnel.png" width="32%" alt="Hyperspace Tunnel">
+<img src="screenshots/scenes/DeepSpace.png" width="32%" alt="Deep Space">
+<img src="screenshots/scenes/ParticleDrift.png" width="32%" alt="Particle Drift">
+<img src="screenshots/scenes/Fireflies.png" width="32%" alt="Fireflies">
+<img src="screenshots/scenes/MatrixRain.png" width="32%" alt="Matrix Rain">
+<img src="screenshots/scenes/Synthwave.png" width="32%" alt="Synthwave">
+<img src="screenshots/scenes/PolarClock.png" width="32%" alt="Polar Clock">
 </p>
 
 Each scene is tunable: **Style** (13 palettes), **Speed**, **Intensity**, **Density**, **Size**, and a **Performance** mode (Auto / Full / Balanced / Power Saver) that scales render resolution to stay smooth on any GPU.
@@ -66,7 +76,7 @@ All three builds can overlay the **time** (or **time + date**) on top of the sce
 | **macOS `.saver`** | Swift · Metal | A true system screensaver in System Settings → Screen Saver. See [`native-saver/`](native-saver/). |
 | **Windows `.scr`** | Rust · Direct3D 11 | A true Windows screensaver (`/s` `/p` `/c`), ~200 KB, no runtime to install. See [`windows-saver/`](windows-saver/). |
 
-The macOS Metal shader and the Windows HLSL shader are faithful ports of the same canonical scene shader, sharing an identical uniform layout — so all three platforms render the same image.
+The macOS Metal shader and the Windows HLSL shader are faithful ports of the same canonical scene shader, sharing an identical uniform layout — so all three platforms render the same image. (Exception: **Flux Drift** runs a full GPU fluid simulation in the desktop app; the native `.saver`/`.scr` use an efficient per-pixel approximation of the same look.)
 
 ---
 
