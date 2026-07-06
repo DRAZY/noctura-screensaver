@@ -128,6 +128,10 @@ final class AuroraRenderer {
         uniforms.time += deltaSeconds
     }
 
+    /// Set an absolute time. Used by the headless verification harness so it can
+    /// step the exact same dispatch the live saver runs.
+    func setTimeForTest(_ t: Float) { uniforms.time = t }
+
     /// Draw one frame into `layer`'s next drawable. A no-op (returns false) when
     /// no drawable is available — e.g. an offscreen layer with zero size — so
     /// callers never crash on a nil drawable.
@@ -138,59 +142,7 @@ final class AuroraRenderer {
               let cmd = queue.makeCommandBuffer() else {
             return false
         }
-
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = drawable.texture
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        pass.colorAttachments[0].storeAction = .store
-
-        // Flux Drift (scene 16): run the real multi-pass fluid simulation. Built on
-        // first use; falls back to the single-pass shader below if it can't build.
-        if uniforms.scene == AuroraRenderer.fluxSceneIndex {
-            if !fluxTried {
-                fluxTried = true
-                fluxFluid = AuroraFluxFluid(device: device, drawablePixelFormat: pixelFormat)
-            }
-            if let flux = fluxFluid {
-                flux.encode(into: cmd, target: drawable.texture, uniforms: uniforms)
-                cmd.addCompletedHandler { [gpuFrameTimeLock] buffer in
-                    let span = buffer.gpuEndTime - buffer.gpuStartTime
-                    if span > 0 { gpuFrameTimeLock.withLock { $0 = span } }
-                }
-                cmd.present(drawable)
-                cmd.commit()
-                return true
-            }
-        }
-
-        // Particle Swarm (scene 17): real 60k-point cloud. Built on first use.
-        if uniforms.scene == AuroraRenderer.swarmSceneIndex {
-            if !swarmTried {
-                swarmTried = true
-                particleSwarm = AuroraParticleSwarm(device: device, drawablePixelFormat: pixelFormat)
-            }
-            if let swarm = particleSwarm {
-                swarm.encode(into: cmd, target: drawable.texture, uniforms: uniforms)
-                cmd.addCompletedHandler { [gpuFrameTimeLock] buffer in
-                    let span = buffer.gpuEndTime - buffer.gpuStartTime
-                    if span > 0 { gpuFrameTimeLock.withLock { $0 = span } }
-                }
-                cmd.present(drawable)
-                cmd.commit()
-                return true
-            }
-        }
-
-        guard let enc = cmd.makeRenderCommandEncoder(descriptor: pass) else { return false }
-        enc.setRenderPipelineState(pipeline)
-        var u = uniforms
-        enc.setFragmentBytes(&u, length: MemoryLayout<AuroraUniforms>.stride, index: 0)
-        enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
-        enc.endEncoding()
-        // Record real GPU execution time so the view can adapt resolution/frame
-        // rate to the hardware. gpuStartTime/gpuEndTime are valid once the buffer
-        // completes; a zero or negative span (unsupported) is simply ignored.
+        encodeFrame(into: cmd, target: drawable.texture)
         cmd.addCompletedHandler { [gpuFrameTimeLock] buffer in
             let span = buffer.gpuEndTime - buffer.gpuStartTime
             if span > 0 { gpuFrameTimeLock.withLock { $0 = span } }
@@ -198,5 +150,50 @@ final class AuroraRenderer {
         cmd.present(drawable)
         cmd.commit()
         return true
+    }
+
+    /// Encode one frame's scene into `target`. This is the SINGLE scene-dispatch
+    /// path shared by the live saver (`render(to:)`) and the headless verification
+    /// harness (`render-real.swift`) — so what we verify offscreen is exactly what
+    /// ships. Scene 16 → fluid Flux Drift, 17 → point Particle Swarm (both built
+    /// lazily, falling back to the single-pass fragment shader), everything else →
+    /// the fullscreen fragment scene shader.
+    func encodeFrame(into cmd: MTLCommandBuffer, target: MTLTexture) {
+        // Flux Drift (scene 16): the real multi-pass fluid simulation.
+        if uniforms.scene == AuroraRenderer.fluxSceneIndex {
+            if !fluxTried {
+                fluxTried = true
+                fluxFluid = AuroraFluxFluid(device: device, drawablePixelFormat: pixelFormat)
+            }
+            if let flux = fluxFluid {
+                flux.encode(into: cmd, target: target, uniforms: uniforms)
+                return
+            }
+        }
+
+        // Particle Swarm (scene 17): the real 60k-point cloud.
+        if uniforms.scene == AuroraRenderer.swarmSceneIndex {
+            if !swarmTried {
+                swarmTried = true
+                particleSwarm = AuroraParticleSwarm(device: device, drawablePixelFormat: pixelFormat)
+            }
+            if let swarm = particleSwarm {
+                swarm.encode(into: cmd, target: target, uniforms: uniforms)
+                return
+            }
+        }
+
+        // All other scenes (and any fallback): the single-pass fragment shader.
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        pass.colorAttachments[0].storeAction = .store
+        guard let enc = cmd.makeRenderCommandEncoder(descriptor: pass) else { return }
+        enc.setRenderPipelineState(pipeline)
+        var u = uniforms
+        enc.setFragmentBytes(&u, length: MemoryLayout<AuroraUniforms>.stride, index: 0)
+        enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        enc.endEncoding()
     }
 }
