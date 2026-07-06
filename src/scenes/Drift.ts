@@ -2,57 +2,104 @@ import * as THREE from "three";
 import type { ParameterValue, Scene, SceneContext } from "../engine/types";
 import { hexToColor, paletteById } from "../engine/palette";
 import { NATIVE_PARAMETERS } from "../engine/sceneParams";
+import { FluxFluid, DEFAULT_FLUID, type FluidSettings } from "./flux/FluxFluid";
 
 /**
- * Flux Drift — a faithful, cheap reproduction of the macOS "Drift" screensaver and
- * its open-source tribute Flux (github.com/sandydoo/flux), built with Flux's ACTUAL
- * method rather than a per-pixel approximation:
+ * Flux Drift — a faithful port of sandydoo/Flux (github.com/sandydoo/flux).
  *
- *   • One short LINE per grid node — a single instanced quad, not an integrated
- *     ribbon. ~8000 lines = ~16k triangles total; the fragment work is trivial.
- *   • Each line's endpoint is a PERSISTENT damped-spring that chases the local flow
- *     (Flux's exact equation: v += ((line_length·flow − endpoint) − v·momentum)·dt).
- *     That inertia/lag/overshoot is what gives the smooth, living sway — the thing
- *     a stateless per-frame re-derivation can never capture.
- *   • The flow velocity is sampled ONCE per line per frame on the CPU (a cheap 2D
- *     simplex curl that drifts with time). Flux samples a 128² fluid texture once
- *     per line; we substitute analytic curl-noise. Either way it's one sample per
- *     line — NOT the tens of per-vertex noise evals the old shader did (which cost
- *     ~50M noise/frame and was the real performance disaster).
- *   • Lines are additive, width/opacity scale with flow speed (calm water → black),
- *     and fade tail→head like a comet (Flux's line_begin_offset).
+ * The motion that makes it come alive is a REAL fluid simulation, not noise: a
+ * 128² Jos-Stam "Stable Fluids" solver ({@link FluxFluid}) evolves a velocity
+ * field with genuine vortices that swirl and dissipate, and thousands of line
+ * springs chase that fluid velocity. Each line's endpoint is a damped spring
+ * (Flux's exact `place_lines.vert` equation) that lags and overshoots the flow —
+ * so the lines wave in circular, inertial arcs around the fluid's vortices.
  *
- * CPU cost per frame: ~8000 × (one 2D-simplex curl + a few flops) — negligible.
- * GPU cost: ~8000 instanced quads — negligible. Runs smoothly on weak hardware.
+ * Everything runs on the GPU: the fluid passes, the per-line spring update (a
+ * ping-pong state texture), and instanced quad rendering. No CPU per-frame work
+ * beyond a handful of uniform writes.
  */
 
-const MAX_LINES = 9000;
+// Line grid: one line per cell. GX×GY lines (~Flux grid_spacing 15px at 1080p).
+// GX doubles as the line-state texture width so texel (gx,gy) ↔ line (gx,gy).
+const GX = 128;
+const GY = 72;
+const NUM_LINES = GX * GY; // 9,216 — matches Flux's grid_spacing 15px (the good-motion density)
 
-// ---- Vertex/fragment shaders (mirror Flux's line.wgsl) ---------------------
-const VERT = /* glsl */ `
+// ---- Line-spring update (Flux place_lines.vert, run as a fullscreen pass) -----
+const SPRING_VERT = /* glsl */ `
+in vec3 position;
+void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }
+`;
+const SPRING_FRAG = /* glsl */ `
 precision highp float;
-// The quad corner comes from a dedicated aCorner attribute (NOT the injected
-// position, which stays a dummy) — this mirrors the proven-rendering geometry
-// layout. aCorner.x in [-0.5,0.5] (width), aCorner.y in [0,1] (base to tip).
-attribute float aParam;
-attribute float aSide;
-attribute vec2  aBase;     // line basepoint in [0,1]^2 (instanced)
-attribute vec2  aEnd;      // line endpoint OFFSET from basepoint, spring-driven (instanced)
-attribute float aWidth;    // line width scale from flow speed (instanced)
-attribute float aCreg;     // per-line colour-zone coordinate (instanced)
+out vec4 fragColor;
+uniform sampler2D uVelocity;   // fluid velocity field
+uniform sampler2D uState;      // previous line state: (endpoint.xy, springVel.xy)
+uniform vec2  uGridSize;       // (GX, GY)
+uniform float uLineLength;     // Flux line_length uniform ≈ 0.6
+uniform float uLineVariance;   // Flux line_variance (0.45)
+uniform float uVelGain;        // rescales weak (slowed) velocity to Flux's ~0.1 magnitude
+uniform float uDeltaTime;
+
+// cheap hash for per-line variance (stands in for Flux's per-line snoise, [0,1])
+float hash(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+
+void main() {
+  ivec2 tc = ivec2(gl_FragCoord.xy);
+  vec2 grid = vec2(tc);
+  vec2 basepoint = (grid + 0.5) / uGridSize;
+
+  // Slowing the sim (TIME_SCALE) weakens the raw velocity; uVelGain rescales it so
+  // lines see Flux's ~0.1 magnitude (correct length + width) WITHOUT changing the
+  // fluid's evolution rate. A pure render/spring gain — decoupled from motion speed.
+  vec2 velocity = texture(uVelocity, basepoint).xy * uVelGain;
+  vec4 st = texelFetch(uState, tc, 0);
+  vec2 endpoint = st.xy;
+  vec2 springVel = st.zw;
+
+  // Flux's EXACT damped-spring constants (place_lines.vert). These are calibrated
+  // for velocity ~0.1 and dt 1/60 — which is exactly what the fluid now produces
+  // (running at the real timestep, not a slowed one). variance in [0,1].
+  float variance = mix(1.0 - uLineVariance, 1.0, hash(grid));
+  float velocityDeltaBoost = mix(3.0, 25.0, 1.0 - variance);
+  float momentumBoost = mix(3.0, 5.0, variance);
+
+  vec2 newVel = (1.0 - uDeltaTime * momentumBoost) * springVel
+              + (uLineLength * velocity - endpoint) * velocityDeltaBoost * uDeltaTime;
+  vec2 newEndpoint = endpoint + uDeltaTime * newVel;
+
+  // Generous blow-up guard only (Flux has no cap); normal endpoints stay well under this.
+  float len = length(newEndpoint);
+  if (len > 0.6) newEndpoint *= 0.6 / len;
+
+  fragColor = vec4(newEndpoint, newVel);
+}
+`;
+
+// ---- Instanced line rendering (Flux line.vert / line.frag) -------------------
+const LINE_VERT = /* glsl */ `
+// ShaderMaterial(GLSL3) injects: in vec3 position; + matrices (unused — we emit clip space).
+// Non-instanced: 4 real vertices per line, each carrying its grid cell + corner.
+in vec2 aCorner;    // quad template: x in [-0.5,0.5] (width), y in [0,1] (base→tip)
+in vec2 aGrid;      // grid cell (gx, gy) — same for the 4 verts of a line
+uniform sampler2D uState;
+uniform sampler2D uVelocity;
+uniform vec2  uGridSize;
 uniform float uAspect;
-uniform float uLineWidth;  // base half-width in clip space
-uniform float uBeginOffset;// tail fade start (Flux line_begin_offset)
-uniform float uTime;
+uniform float uZoom;
+uniform float uLineWidth;
+uniform float uBeginOffset;
+uniform float uVelGain;   // match the spring's velocity rescale (width/brightness)
 uniform vec3  uColorA;
 uniform vec3  uColorB;
 uniform vec3  uColorC;
-varying vec2  vCorner;
-varying vec3  vColor;
-varying float vBeginOffset;
-varying float vBright;
+uniform float uTime;
+out vec2  vVertex;
+out vec3  vColor;
+out float vAlpha;
+out float vBeginOffset;
 
-vec3 ncCyc(float x) {
+vec3 palCyc(float x){
   float f = fract(x);
   if (f < 0.3333) return mix(uColorA, uColorB, f / 0.3333);
   if (f < 0.6666) return mix(uColorB, uColorC, (f - 0.3333) / 0.3333);
@@ -60,351 +107,352 @@ vec3 ncCyc(float x) {
 }
 
 void main() {
-  vec2 basePos = aBase * 2.0 - 1.0;                    // [-1,1]^2
+  vec2 stateUv = (aGrid + 0.5) / uGridSize;      // texel-centre of this line's state
+  vec2 basepoint = stateUv;                       // grid cell centre in [0,1]^2
+  vec2 endpoint = texture(uState, stateUv).xy;    // spring endpoint (Nearest-filtered state)
+  vec2 fluidVel = texture(uVelocity, basepoint).xy * uVelGain; // rescaled to Flux's ~0.1
 
-  vec2 end = aEnd;                                     // spring-driven offset
-  vec2 xb = normalize(vec2(-end.y, end.x) + 1e-6);     // perpendicular to the line
-  // Slide along the line (corner.y) and out to the edge (corner.x), exactly like Flux.
-  vec2 point = vec2(uAspect, 1.0) * basePos
-             + end * aParam
-             + uLineWidth * aWidth * xb * (aSide * 0.5);
+  // Flux's EXACT width/opacity ramp (place_lines.vert widthBoost). Faster flow →
+  // wider AND longer stroke, so the length:width ratio stays ~constant (thin blades);
+  // calm flow → nearly invisible. This is what auto-maintains the blade aspect.
+  float wb = clamp(2.5 * length(fluidVel), 0.0, 1.0);
+  float lineWidth = wb * wb * (3.0 - 2.0 * wb);
+
+  vec2 xBasis = vec2(-endpoint.y, endpoint.x);
+  xBasis /= length(xBasis) + 1e-4;
+  vec2 point = vec2(uAspect, 1.0) * uZoom * (basepoint * 2.0 - 1.0)
+             + endpoint * aCorner.y
+             + uLineWidth * lineWidth * xBasis * aCorner.x;
   point.x /= uAspect;
   gl_Position = vec4(point, 0.0, 1.0);
 
-  // Short lines would over-fade; scale the fade start down for them (Flux trick).
-  float shortBoost = 1.0 + (uLineWidth * aWidth) / (length(end) + 1e-4);
+  vVertex = aCorner;
+  float shortBoost = 1.0 + (uLineWidth * lineWidth) / (length(endpoint) + 1e-4);
   vBeginOffset = uBeginOffset / shortBoost;
-  vCorner = vec2(aSide * 0.5, aParam);
-  // Pull the palette toward its own luma (mix 0.72) → dusty, desaturated tones,
-  // identical to the native .saver's sceneDrift so the Style control matches across
-  // renderers. Additive overlap still lifts crossings toward cream.
-  vec3 pc = ncCyc(aCreg + 0.02 * uTime);
-  float pl = dot(pc, vec3(0.299, 0.587, 0.114));
-  vColor = mix(vec3(pl), pc, 0.72);
-  // aWidth already encodes flow speed (smoothstep). Carry it as brightness so calm
-  // water goes fully black (negative space) and only fast flow lights up — the
-  // sparse, breathing look of real Drift/Flux instead of a solid neon field.
-  vBright = aWidth;
+  // Colour zone from flow direction + basepoint, cycled through the Style palette.
+  float angle = atan(fluidVel.y, fluidVel.x) / 6.28318 + 0.5;
+  vColor = palCyc(angle + 0.35 * (basepoint.x + basepoint.y) + 0.01 * uTime);
+  vAlpha = wb;
 }
 `;
-
-const FRAG = /* glsl */ `
+const LINE_FRAG = /* glsl */ `
 precision highp float;
-uniform float uGlow;   // brightness multiplier = 1.0 + Intensity (native parity)
-varying vec2  vCorner;
-varying vec3  vColor;
-varying float vBeginOffset;
-varying float vBright;
+in vec2  vVertex;
+in vec3  vColor;
+in float vAlpha;
+in float vBeginOffset;
+out vec4 fragColor;
+uniform float uGlow;
 void main() {
-  float fade = smoothstep(vBeginOffset, 1.0, vCorner.y);   // tail dark → head bright
-  float ew = fwidth(vCorner.x) + 1e-4;
-  float edge = 1.0 - smoothstep(0.5 - ew, 0.5, abs(vCorner.x)); // AA across width
-  // Fold flow-speed brightness in (squared → steep): calm flow ≈ black, fast flow
-  // bright. This is what opens up the black negative space between the streams.
-  float a = fade * edge * vBright * vBright;
-  if (a <= 0.001) discard;
-  gl_FragColor = vec4(vColor * a * uGlow, 1.0);            // additive; Intensity → uGlow
+  float fade = smoothstep(vBeginOffset, 1.0, vVertex.y);      // tail dark → head bright
+  float xo = abs(vVertex.x);
+  float edge = 1.0 - smoothstep(0.5 - fwidth(xo), 0.5, xo);   // AA across width
+  float a = vAlpha * fade * edge;
+  if (a <= 0.0009) discard;
+  fragColor = vec4(vColor * a * uGlow, 1.0);                  // additive
 }
 `;
 
-// ---- Cheap 2D simplex noise on the CPU (Ashima port) for the flow field -----
-const F2 = 0.5 * (Math.sqrt(3) - 1);
-const G2 = (3 - Math.sqrt(3)) / 6;
-const perm = new Uint8Array(512);
-const gx = new Float32Array(512);
-const gy = new Float32Array(512);
-(() => {
-  // Deterministic permutation (no Math.random — reproducible, matches other scenes).
-  let s = 0x2545f491 >>> 0;
-  const p = new Uint8Array(256);
-  for (let i = 0; i < 256; i++) p[i] = i;
-  for (let i = 255; i > 0; i--) {
-    s ^= s << 13; s ^= s >>> 17; s ^= s << 5; s >>>= 0;
-    const j = s % (i + 1);
-    const t = p[i]; p[i] = p[j]; p[j] = t;
-  }
-  for (let i = 0; i < 512; i++) {
-    const v = p[i & 255];
-    const ang = (v / 256) * Math.PI * 2;
-    perm[i] = v;
-    gx[i] = Math.cos(ang);
-    gy[i] = Math.sin(ang);
-  }
-})();
-/** Divergence-free flow velocity (curl of a time-drifting simplex) at flow-space
- * point (px, py). Pure — no scene state. Writes the velocity into `out`. */
-function velAt(px: number, py: number, t: number, out: { x: number; y: number }): void {
-  const dxo = t * 0.06, dyo = -t * 0.045;
-  const e = 0.02;
-  const c = snoise2(px + dxo, py + dyo);
-  const nx = snoise2(px + e + dxo, py + dyo) - c;
-  const ny = snoise2(px + dxo, py + e + dyo) - c;
-  out.x = ny / e + 0.12; // curl + a gentle laminar drift; calm regions stay near-zero → black
-  out.y = -nx / e + 0.05;
+// Debug: view the raw fluid velocity field as colour (?fluxdebug=1).
+const DEBUG_VERT = /* glsl */ `
+in vec3 position;
+out vec2 vUv;
+void main(){ vUv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, 0.0, 1.0); }
+`;
+const DEBUG_FRAG = /* glsl */ `
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D uVelocity;
+uniform float uVelScale;
+void main(){
+  vec2 v = texture(uVelocity, vUv).xy * uVelScale;
+  fragColor = vec4(0.5 + 30.0 * v, 0.5, 1.0);
 }
+`;
 
-function snoise2(xin: number, yin: number): number {
-  const s = (xin + yin) * F2;
-  const i = Math.floor(xin + s);
-  const j = Math.floor(yin + s);
-  const t = (i + j) * G2;
-  const x0 = xin - (i - t);
-  const y0 = yin - (j - t);
-  let i1 = 0, j1 = 1;
-  if (x0 > y0) { i1 = 1; j1 = 0; }
-  const x1 = x0 - i1 + G2, y1 = y0 - j1 + G2;
-  const x2 = x0 - 1 + 2 * G2, y2 = y0 - 1 + 2 * G2;
-  const ii = i & 255, jj = j & 255;
-  let n = 0;
-  let t0 = 0.5 - x0 * x0 - y0 * y0;
-  if (t0 > 0) { t0 *= t0; const g = perm[ii + perm[jj]]; n += t0 * t0 * (gx[g] * x0 + gy[g] * y0); }
-  let t1 = 0.5 - x1 * x1 - y1 * y1;
-  if (t1 > 0) { t1 *= t1; const g = perm[ii + i1 + perm[jj + j1]]; n += t1 * t1 * (gx[g] * x1 + gy[g] * y1); }
-  let t2 = 0.5 - x2 * x2 - y2 * y2;
-  if (t2 > 0) { t2 *= t2; const g = perm[ii + 1 + perm[jj + 1]]; n += t2 * t2 * (gx[g] * x2 + gy[g] * y2); }
-  return 70 * n;
-}
+// Native-control mapping (parity model). Size → fluid energy + swirl; Intensity →
+// glow; Density → visible line fraction; Speed → simulation rate; Style → palette.
+const DEFAULT_THEME = "aurora";
+const NATIVE = { speed: 0.3, intensity: 1.0, density: 0.5, size: 0.85 };
 
-// Native-parity option model (mirrors the .saver/.scr global controls exactly):
-// Speed / Intensity / Density / Size / Style, same ranges + defaults. See the
-// macOS AuroraPreferences ranges and Windows settings.rs.
-const DEFAULT_THEME = "aurora";     // native default palette is index 0 = Aurora
-const DEFAULT_SPEED = 0.3;          // native speed default (range 0.03..1.2)
-const DEFAULT_INTENSITY = 1.0;      // native intensity default (range 0.0..1.5) → glow
-const DEFAULT_DENSITY = 0.5;        // native density default (range 0.0..1.0)
-const DEFAULT_SIZE = 0.85;          // native size default (range 0.4..2.2) → swirl
-const DEFAULT_LEN = 0.05; // fixed dash length (no native control for it)
-const MAX_OFFSET = 0.12;  // hard cap on endpoint magnitude (clip space) — kills long spikes
+// Real-time → sim-time scale. Flux at 60fps (scale 1.0) evolves ~4.8x faster than
+// the macOS Drift reference (measured: 44ms vs 210ms half-decorrelation), so we run
+// the simulation slower in real time. The per-step physics are unchanged, so the
+// smaller dt ALSO makes the spring settle slower in real time — reproducing the
+// reference's inertial, slow-start motion. Field strength lost to the smaller dt is
+// restored by scaling uLineLength (1/TIME_SCALE), which touches only stroke length,
+// never the fluid dynamics. Tuned against the reference decorrelation curve.
+const TIME_SCALE = 0.115;
+const BASE_LINE_LENGTH = 0.6;   // Flux line_length uniform (velocity is rescaled by VEL_GAIN, not this)
+// The slowed sim has a weaker velocity field; VEL_GAIN rescales the sampled velocity
+// back to Flux's ~0.1 magnitude for rendering + the spring, so length AND width are
+// correct while evolution stays slow. Purely a read-side gain — no effect on motion rate.
+const VEL_GAIN = 10.0;
+// With velocity_dissipation = 0 (Flux's default) the field has no energy sink and
+// grows unbounded over a long run (fine for a 38s clip, wrong for a screensaver that
+// runs for hours). A modest dissipation gives a STABLE equilibrium (|v| ≈ noise/diss,
+// independent of timestep) so the look holds indefinitely.
+const DISSIPATION = 2.0;
 
-/** Size → swirl-flow mapping, identical to the native sceneDrift shader
- * (`flow = 1.3 * clamp(size*1.05, 0.6, 1.7)`), so a given Size reads the same in
- * the web app and the .saver. */
-function sizeToFlow(size: number): number {
-  return 1.3 * Math.min(Math.max(size * 1.05, 0.6), 1.7);
+function makeStateRT(): THREE.WebGLRenderTarget {
+  return new THREE.WebGLRenderTarget(GX, GY, {
+    type: THREE.FloatType,
+    format: THREE.RGBAFormat,
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+    depthBuffer: false,
+    stencilBuffer: false,
+  });
 }
-/** Intensity → brightness glow, matching native `glow = 1.0 + intensity`. */
-function intensityToGlow(intensity: number): number {
-  return 1.0 + intensity;
-}
-// Colours are driven entirely by the selected Style/palette (no per-colour pickers,
-// matching native). The shader desaturates them the same way the .saver does.
-const defaultPalette = paletteById(DEFAULT_THEME);
 
 export class Drift implements Scene {
   readonly id = "drift";
   readonly name = "Flux Drift";
-  readonly description = "Lines of light drifting along a flow field — the macOS Drift look.";
-
-  // Parity with the native .saver/.scr global controls: Speed / Intensity /
-  // Density / Size / Style — the shared native model (see engine/sceneParams).
+  readonly description = "Lines of light woven through a living fluid — the macOS Drift / Flux look.";
   readonly parameters = NATIVE_PARAMETERS;
 
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.Camera(); // pass-through: vertex shader emits clip space
-  private geometry: THREE.BufferGeometry | null = null;
-  private material: THREE.ShaderMaterial | null = null;
-  private mesh: THREE.Mesh | null = null;
+  private readonly camera = new THREE.Camera();
+  private renderer!: THREE.WebGLRenderer;
 
-  // Per-line CPU state (Flux spring).
-  private readonly baseX = new Float32Array(MAX_LINES);
-  private readonly baseY = new Float32Array(MAX_LINES);
-  private readonly offX = new Float32Array(MAX_LINES); // endpoint offset
-  private readonly offY = new Float32Array(MAX_LINES);
-  private readonly velX = new Float32Array(MAX_LINES);
-  private readonly velY = new Float32Array(MAX_LINES);
-  private readonly momentum = new Float32Array(MAX_LINES);
-  private readonly deltaBoost = new Float32Array(MAX_LINES);
-  private endAttr: THREE.BufferAttribute | null = null;   // aEnd, per vertex
-  private widthAttr: THREE.BufferAttribute | null = null; // aWidth, per vertex
+  private fluid!: FluxFluid;
+  private fluidSettings: FluidSettings = { ...DEFAULT_FLUID };
+
+  // Line-state ping-pong.
+  private stateA!: THREE.WebGLRenderTarget;
+  private stateB!: THREE.WebGLRenderTarget;
+  private springMat!: THREE.RawShaderMaterial;
+  private readonly springScene = new THREE.Scene();
+  private springQuad!: THREE.Mesh;
+
+  private lineMat!: THREE.ShaderMaterial;
+  private lineMesh!: THREE.Mesh;
+
+  private debugMat: THREE.RawShaderMaterial | null = null;
+  private readonly debugScene = new THREE.Scene();
+  private readonly debug =
+    typeof location !== "undefined" && new URLSearchParams(location.search).get("fluxdebug") === "1";
+
+  // Native-control state.
+  private speed = NATIVE.speed;
+  private size = NATIVE.size;
+  private density = NATIVE.density;
   private aspect = 1;
-  private flow = sizeToFlow(DEFAULT_SIZE);
-  private lineLen = DEFAULT_LEN;
-  private timeScale = DEFAULT_SPEED;
+  private simTime = 0;     // accumulated fixed-step sim time (deterministic, drives noise scroll)
 
-  init(_ctx: SceneContext): void {
-    // Non-instanced INDEXED geometry (matches the proven-rendering structure):
-    // 4 vertices per line (a quad), 6 indices per line (2 tris). Per-line data is
-    // duplicated across the 4 verts; only aEnd/aWidth re-upload each frame.
-    const VPL = 4;
-    const N = MAX_LINES * VPL;
-    const cornerPat = [ -0.5, 0, 0.5, 0, -0.5, 1, 0.5, 1 ]; // (x,y) × 4
-    const position = new Float32Array(N * 3); // dummy (all zeros) — geometry comes from aCorner
-    const aParam = new Float32Array(N);
-    const aSide = new Float32Array(N);
-    const aBase = new Float32Array(N * 2);
-    const aEnd = new Float32Array(N * 2);
-    const aWidth = new Float32Array(N);
-    const aCreg = new Float32Array(N);
-    const indices = new Uint32Array(MAX_LINES * 6);
+  init(ctx: SceneContext): void {
+    this.renderer = ctx.renderer;
+    this.fluid = new FluxFluid(this.renderer, 128);
 
-    let s = 0x9e3779b9 >>> 0;
-    const rand = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return (s % 100000) / 100000; };
-    const seedV = { x: 0, y: 0 };
+    // Warm up the fluid so the first visible frame already has structure. Use the
+    // stable-run dissipation so warm-up settles at the same equilibrium the running
+    // sim holds (no first-second brightness transient).
+    this.fluidSettings.timestep = 1 / 60;
+    this.fluidSettings.velocityDissipation = DISSIPATION;
+    for (let i = 0; i < 150; i++) { this.simTime += 1 / 60; this.fluid.step(this.renderer, this.simTime, this.fluidSettings); }
 
-    // Jittered grid of basepoints (Flux's grid_spacing) — even coverage that combs
-    // the flow uniformly, instead of random clumps that burst into spikes at vortices.
-    // 120×75 = 9000 = MAX_LINES exactly (≈16:9). Cells are visited in a coprime-stride
-    // order (5557 ⟂ 9000) so ANY density prefix still covers the whole screen evenly,
-    // not just the first rows.
-    const cols = 120, rows = 75;
-    for (let i = 0; i < MAX_LINES; i++) {
-      const cell = (i * 5557) % MAX_LINES; // bijective stratified permutation
-      const gx = cell % cols, gy = Math.floor(cell / cols);
-      const bx = (gx + 0.5 + (rand() - 0.5) * 0.7) / cols; // cell center + mild jitter
-      const by = (gy + 0.5 + (rand() - 0.5) * 0.7) / rows;
-      this.baseX[i] = bx; this.baseY[i] = by;
-      const variance = 1 - 0.55 * rand();
-      this.momentum[i] = 3 + 2 * variance;          // 3..5
-      this.deltaBoost[i] = 4 + 18 * (1 - variance);  // ~4..22
-      const creg = 0.6 * snoise2(bx * 2.2, by * 2.2) + 0.5 * (bx + by);
-      // Seed the endpoint at its steady-state (spring target) so the first frame
-      // already shows the lines rather than degenerate zero-length quads.
-      velAt(bx * this.flow, by * this.flow, 0, seedV);
-      this.offX[i] = DEFAULT_LEN * seedV.x;
-      this.offY[i] = DEFAULT_LEN * seedV.y;
-      const sp = Math.hypot(seedV.x, seedV.y);
-      const wbs = Math.min(2.5 * sp, 1);
-      const w0 = wbs * wbs * (3 - 2 * wbs);
-      const base = i * VPL;
-      for (let k = 0; k < VPL; k++) {
+    // Line-state textures + spring pass.
+    this.stateA = makeStateRT();
+    this.stateB = makeStateRT();
+    const tri = new THREE.BufferGeometry();
+    tri.setAttribute("position", new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), 3));
+    this.springMat = new THREE.RawShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: SPRING_VERT,
+      fragmentShader: SPRING_FRAG,
+      depthTest: false,
+      depthWrite: false,
+      uniforms: {
+        uVelocity: { value: null },
+        uState: { value: null },
+        uGridSize: { value: new THREE.Vector2(GX, GY) },
+        uLineLength: { value: BASE_LINE_LENGTH },
+        uLineVariance: { value: 0.45 },
+        uVelGain: { value: VEL_GAIN },
+        uDeltaTime: { value: 1 / 60 },
+      },
+    });
+    this.springQuad = new THREE.Mesh(tri, this.springMat);
+    this.springQuad.frustumCulled = false;
+    this.springScene.add(this.springQuad);
+
+    // Non-instanced indexed line geometry (the proven-rendering structure): 4 real
+    // vertices per line + 6 indices, each vertex tagged with its grid cell + corner.
+    // Density is controlled by the draw range.
+    const cornerPat = [-0.5, 0, 0.5, 0, -0.5, 1, 0.5, 1];
+    const N = NUM_LINES * 4;
+    const position = new Float32Array(N * 3); // dummy
+    const aCorner = new Float32Array(N * 2);
+    const aGrid = new Float32Array(N * 2);
+    const indices = new Uint32Array(NUM_LINES * 6);
+    // Cells placed in a coprime-stride-permuted order (7001 ⟂ 9216) so that drawing
+    // any prefix of the lines (Density < 1) still covers the whole screen evenly —
+    // no rigid lattice of holes. Default density draws most of them.
+    for (let i = 0; i < NUM_LINES; i++) {
+      const cell = (i * 7001) % NUM_LINES;
+      const gx = cell % GX, gy = Math.floor(cell / GX);
+      const base = i * 4;
+      for (let k = 0; k < 4; k++) {
         const vi = base + k;
-        aSide[vi] = cornerPat[k * 2] * 2.0;
-        aParam[vi] = cornerPat[k * 2 + 1];
-        aBase[vi * 2] = bx; aBase[vi * 2 + 1] = by;
-        aEnd[vi * 2] = this.offX[i]; aEnd[vi * 2 + 1] = this.offY[i];
-        aWidth[vi] = w0;
-        aCreg[vi] = creg;
+        aCorner[vi * 2] = cornerPat[k * 2];
+        aCorner[vi * 2 + 1] = cornerPat[k * 2 + 1];
+        aGrid[vi * 2] = gx;
+        aGrid[vi * 2 + 1] = gy;
       }
       const ii = i * 6;
       indices[ii] = base; indices[ii + 1] = base + 1; indices[ii + 2] = base + 2;
       indices[ii + 3] = base + 2; indices[ii + 4] = base + 1; indices[ii + 5] = base + 3;
     }
-
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(position, 3));
-    geo.setAttribute("aParam", new THREE.BufferAttribute(aParam, 1));
-    geo.setAttribute("aSide", new THREE.BufferAttribute(aSide, 1));
-    geo.setAttribute("aBase", new THREE.BufferAttribute(aBase, 2));
-    this.endAttr = new THREE.BufferAttribute(aEnd, 2);
-    this.widthAttr = new THREE.BufferAttribute(aWidth, 1);
-    this.endAttr.setUsage(THREE.DynamicDrawUsage);
-    this.widthAttr.setUsage(THREE.DynamicDrawUsage);
-    geo.setAttribute("aEnd", this.endAttr);
-    geo.setAttribute("aWidth", this.widthAttr);
-    geo.setAttribute("aCreg", new THREE.BufferAttribute(aCreg, 1));
+    geo.setAttribute("aCorner", new THREE.BufferAttribute(aCorner, 2));
+    geo.setAttribute("aGrid", new THREE.BufferAttribute(aGrid, 2));
     geo.setIndex(new THREE.BufferAttribute(indices, 1));
-    geo.setDrawRange(0, Math.floor(MAX_LINES * DEFAULT_DENSITY) * 6);
-    this.geometry = geo;
+    // Density maps to how many lines are drawn (hole-free thanks to the stratified
+    // order above). Default 0.5 already reads as a full carpet at this grid density.
+    geo.setDrawRange(0, Math.floor(NUM_LINES * (0.65 + 0.35 * NATIVE.density)) * 6);
 
-    this.material = new THREE.ShaderMaterial({
-      vertexShader: VERT,
-      fragmentShader: FRAG,
+    const p = paletteById(DEFAULT_THEME);
+    this.lineMat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: LINE_VERT,
+      fragmentShader: LINE_FRAG,
       transparent: true,
       depthTest: false,
       depthWrite: false,
-      side: THREE.DoubleSide, // lines are flat quads with flow-dependent winding — never cull
+      side: THREE.DoubleSide, // line quads flip winding with flow direction — never cull
       blending: THREE.AdditiveBlending,
       uniforms: {
+        uState: { value: this.stateA.texture },
+        uVelocity: { value: this.fluid.velocityTexture },
+        uGridSize: { value: new THREE.Vector2(GX, GY) },
         uAspect: { value: 1 },
-        uLineWidth: { value: 0.014 }, // fixed stroke width (no native line-width control)
-        uBeginOffset: { value: 0.4 },
+        uZoom: { value: 1.6 }, // Flux view_scale — zooms into the fluid
+        uLineWidth: { value: 0.011 }, // Flux: view_scale*line_width*scale_factor ≈ 0.011 (velocity-scaled in shader)
+        uBeginOffset: { value: 0.4 }, // Flux line_begin_offset
+        uVelGain: { value: VEL_GAIN },
+        uGlow: { value: 1.0 + NATIVE.intensity },
+        uColorA: { value: hexToColor(p.a) },
+        uColorB: { value: hexToColor(p.b) },
+        uColorC: { value: hexToColor(p.c) },
         uTime: { value: 0 },
-        uGlow: { value: intensityToGlow(DEFAULT_INTENSITY) },
-        uColorA: { value: hexToColor(defaultPalette.a) },
-        uColorB: { value: hexToColor(defaultPalette.b) },
-        uColorC: { value: hexToColor(defaultPalette.c) },
       },
     });
+    this.lineMesh = new THREE.Mesh(geo, this.lineMat);
+    this.lineMesh.frustumCulled = false;
+    this.scene.add(this.lineMesh);
 
-    this.mesh = new THREE.Mesh(this.geometry, this.material);
-    this.mesh.frustumCulled = false;
-    this.scene.add(this.mesh);
+    this.applyControls();
+
+    if (this.debug) {
+      this.debugMat = new THREE.RawShaderMaterial({
+        glslVersion: THREE.GLSL3, vertexShader: DEBUG_VERT, fragmentShader: DEBUG_FRAG,
+        depthTest: false, depthWrite: false,
+        uniforms: { uVelocity: { value: this.fluid.velocityTexture }, uVelScale: { value: 1.0 } },
+      });
+      const dq = new THREE.Mesh(tri.clone(), this.debugMat);
+      dq.frustumCulled = false;
+      this.debugScene.add(dq);
+    }
   }
 
-  update(time: number, delta: number): void {
-    if (!this.material || !this.endAttr || !this.widthAttr) return;
-    this.material.uniforms.uTime.value = time;
-    const t = time * this.timeScale;
-    const dt = Math.min(Math.max(delta, 0), 0.05); // clamp so a hitch can't fling springs
+  /** Map the native controls onto fluid + line uniforms. */
+  private applyControls(): void {
+    // At DEFAULT knob positions everything equals Flux's defaults (so the scene
+    // matches the reference out of the box); the controls only nudge from there.
+    // Size → fluid force strength (bigger, more energetic swirls) and stroke length.
+    // Density → grid draw fraction (handled in setParameter). Speed → sim rate.
+    this.fluidSettings.noiseMultiplier = 0.75 + 0.30 * (this.size - NATIVE.size) / 0.85; // 1.0 at default size
+    this.fluidSettings.velocityDissipation = DISSIPATION; // stable field energy for long runs
+    const s = this.springMat.uniforms;
+    // Size nudges stroke length around the Flux baseline.
+    s.uLineLength.value = BASE_LINE_LENGTH * (1.0 + 0.5 * (this.size - NATIVE.size));
+  }
 
-    const VPL = 4;
-    const end = this.endAttr.array as Float32Array;
-    const wid = this.widthAttr.array as Float32Array;
-    const v = { x: 0, y: 0 };
-    const lines = Math.floor((this.geometry?.drawRange.count ?? MAX_LINES * 6) / 6);
+  update(_time: number, delta: number): void {
+    // ONE smooth sim step per rendered frame (no stutter), advanced by real time so
+    // motion runs at a fixed real-world rate on any hardware. dt is scaled by
+    // TIME_SCALE to match the reference's slow evolution; the small dt also makes the
+    // spring settle slowly = inertial motion. Speed multiplies the rate.
+    const speedScale = this.speed / NATIVE.speed;
+    const dt = Math.min(Math.max(delta, 0), 0.05) * TIME_SCALE * speedScale;
+    if (dt <= 0) return;
+    this.simTime += dt;
+    if (this.simTime > 1000) this.simTime -= 1000; // wrap (Flux MAX_ELAPSED_TIME) — float safety over long runs
 
-    for (let i = 0; i < lines; i++) {
-      velAt(this.baseX[i] * this.flow, this.baseY[i] * this.flow, t, v);
-      const speed = Math.hypot(v.x, v.y);
-      const tx = this.lineLen * v.x; // spring target (Flux: line_length·flow)
-      const ty = this.lineLen * v.y;
-      // Flux's damped-spring endpoint: the offset chases the target with momentum and
-      // lag — the smooth inertial sway a stateless re-derivation can't produce.
-      const m = this.momentum[i], db = this.deltaBoost[i];
-      this.velX[i] = (1 - dt * m) * this.velX[i] + (tx - this.offX[i]) * db * dt;
-      this.velY[i] = (1 - dt * m) * this.velY[i] + (ty - this.offY[i]) * db * dt;
-      this.offX[i] += dt * this.velX[i];
-      this.offY[i] += dt * this.velY[i];
-      // Cap endpoint length so a fast spring can't fling a line into a long spike.
-      const olen = Math.hypot(this.offX[i], this.offY[i]);
-      if (olen > MAX_OFFSET) { const k = MAX_OFFSET / olen; this.offX[i] *= k; this.offY[i] *= k; }
-      // Steeper, higher-threshold speed gate: slow flow → 0 so those lines vanish
-      // into black; only genuinely fast streams light up (Drift's breathing sparseness).
-      const wb = Math.min(Math.max(1.7 * speed - 0.25, 0), 1);
-      const w = wb * wb * (3 - 2 * wb); // smoothstep(0,1,wb): calm water → nothing
-      const ox = this.offX[i], oy = this.offY[i];
-      for (let k = 0; k < VPL; k++) {
-        const vi = i * VPL + k;
-        end[vi * 2] = ox; end[vi * 2 + 1] = oy;
-        wid[vi] = w;
-      }
-    }
-    this.endAttr.needsUpdate = true;
-    this.widthAttr.needsUpdate = true;
+    this.fluidSettings.timestep = dt;
+    this.fluid.step(this.renderer, this.simTime, this.fluidSettings);
+
+    const su = this.springMat.uniforms;
+    su.uDeltaTime.value = dt;
+    su.uVelocity.value = this.fluid.velocityTexture;
+    su.uState.value = this.stateA.texture;
+    const prev = this.renderer.getRenderTarget();
+    this.renderer.setRenderTarget(this.stateB);
+    this.renderer.render(this.springScene, this.camera);
+    const t = this.stateA; this.stateA = this.stateB; this.stateB = t;
+    this.renderer.setRenderTarget(prev);
+
+    // Point the line material at the fresh state + velocity.
+    this.lineMat.uniforms.uState.value = this.stateA.texture;
+    this.lineMat.uniforms.uVelocity.value = this.fluid.velocityTexture;
+    this.lineMat.uniforms.uTime.value = this.simTime;
+    if (this.debugMat) this.debugMat.uniforms.uVelocity.value = this.fluid.velocityTexture;
   }
 
   render(renderer: THREE.WebGLRenderer, target: THREE.WebGLRenderTarget | null): void {
     renderer.setRenderTarget(target);
-    renderer.setClearColor(0x04030a, 1);
+    renderer.setClearColor(0x05040c, 1);
     renderer.clear();
+    if (this.debug && this.debugMat) {
+      renderer.render(this.debugScene, this.camera);
+      return;
+    }
     renderer.render(this.scene, this.camera);
   }
 
   resize(width: number, height: number): void {
     this.aspect = width / Math.max(height, 1);
-    if (this.material) this.material.uniforms.uAspect.value = this.aspect;
+    this.lineMat.uniforms.uAspect.value = this.aspect;
   }
 
   setParameter(id: string, value: ParameterValue): void {
-    const u = this.material?.uniforms;
-    if (!u) return;
     switch (id) {
-      case "speed": // native Speed → time scale
-        this.timeScale = Number(value);
+      case "speed":
+        this.speed = Number(value);
         break;
-      case "intensity": // native Intensity → brightness glow (glow = 1 + intensity)
-        u.uGlow.value = intensityToGlow(Number(value));
+      case "intensity":
+        this.lineMat.uniforms.uGlow.value = 1.0 + Number(value);
         break;
-      case "density": // native Density → visible line count
-        if (this.geometry) this.geometry.setDrawRange(0, Math.floor(MAX_LINES * Number(value)) * 6);
+      case "density":
+        this.density = Number(value);
+        // 0..1 → 0.5..1.0 fraction of lines drawn (stratified order = hole-free).
+        this.lineMesh.geometry.setDrawRange(0, Math.floor(NUM_LINES * (0.65 + 0.35 * this.density)) * 6);
         break;
-      case "size": // native Size → swirl flow (same formula as the .saver shader)
-        this.flow = sizeToFlow(Number(value));
+      case "size":
+        this.size = Number(value);
+        this.applyControls();
         break;
-      case "theme": { // native Style → palette (colours desaturated in-shader)
+      case "theme": {
         const p = paletteById(String(value));
-        (u.uColorA.value as THREE.Color).set(p.a);
-        (u.uColorB.value as THREE.Color).set(p.b);
-        (u.uColorC.value as THREE.Color).set(p.c);
+        (this.lineMat.uniforms.uColorA.value as THREE.Color).set(p.a);
+        (this.lineMat.uniforms.uColorB.value as THREE.Color).set(p.b);
+        (this.lineMat.uniforms.uColorC.value as THREE.Color).set(p.c);
         break;
       }
     }
   }
 
   dispose(): void {
-    this.geometry?.dispose();
-    this.material?.dispose();
-    if (this.mesh) this.scene.remove(this.mesh);
-    this.mesh = null;
+    this.fluid?.dispose();
+    this.stateA?.dispose();
+    this.stateB?.dispose();
+    this.springMat?.dispose();
+    this.springQuad?.geometry.dispose();
+    this.lineMat?.dispose();
+    this.lineMesh?.geometry.dispose();
+    this.debugMat?.dispose();
+    if (this.lineMesh) this.scene.remove(this.lineMesh);
   }
 }
