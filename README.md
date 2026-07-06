@@ -78,7 +78,7 @@ All three builds can overlay the **time** (or **time + date**) on top of the sce
 | **macOS `.saver`** | Swift · Metal | A true system screensaver in System Settings → Screen Saver. See [`native-saver/`](native-saver/). |
 | **Windows `.scr`** | Rust · Direct3D 11 | A true Windows screensaver (`/s` `/p` `/c`), ~200 KB, no runtime to install. See [`windows-saver/`](windows-saver/). |
 
-The macOS Metal shader and the Windows HLSL shader are faithful ports of the same canonical scene shader, sharing an identical uniform layout — so all three platforms render the same image. (Exception: **Flux Drift** runs a full GPU fluid simulation in the desktop app; the native `.saver`/`.scr` use an efficient per-pixel approximation of the same look.)
+The macOS Metal shader and the Windows HLSL shader are faithful ports of the same canonical scene shader, sharing an identical uniform layout — so all three platforms render the same image. **Flux Drift** goes further: all three renderers run the same real GPU **Stable-Fluids** simulation — a 128² Navier-Stokes solver (WebGL render targets, Metal float textures, D3D11 float textures) feeding thousands of instanced line "blades" — so the fluid motion matches across web, macOS, and Windows.
 
 ---
 
