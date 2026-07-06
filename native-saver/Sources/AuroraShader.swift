@@ -21,7 +21,7 @@ struct AuroraUniforms {
 }
 
 /// Number of scenes the shader implements; mirrors `AuroraScene.all`.
-let kAuroraSceneCount = 17
+let kAuroraSceneCount = 18
 
 /// Multi-scene Metal Shading Language source, compiled at runtime via
 /// `MTLDevice.makeLibrary(source:)` (the offline `metal` tool ships only with
@@ -902,6 +902,11 @@ enum AuroraShaderSource {
         else if (s == 14) col = sceneNebula(in.uv, u, aspect);
         else if (s == 15) col = sceneFractal(in.uv, u, aspect);
         else if (s == 16) col = sceneDrift(in.uv, u, aspect);
+        // Scene 16 (Flux Drift) and 17 (Particle Swarm) have dedicated multi-pass /
+        // point pipelines in the renderer; these fragment branches are only the
+        // gpu-cost-gate probe + graceful fallback if the pipeline can't build.
+        // Particle Swarm falls back to the per-pixel particle field.
+        else if (s == 17) col = sceneParticles(in.uv, u, aspect);
         else             col = sceneAurora(in.uv, u, aspect);
         // Dither the final color to break up 8-bit banding (matches web build).
         col += ditherRGB(in.position.xy);

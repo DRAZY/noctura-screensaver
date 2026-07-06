@@ -28,6 +28,7 @@ struct AuroraScene {
         AuroraScene(name: "Nebula Drift"),
         AuroraScene(name: "Fractal Bloom"),
         AuroraScene(name: "Flux Drift"),
+        AuroraScene(name: "Particle Swarm"),
     ]
 }
 

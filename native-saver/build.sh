@@ -27,7 +27,8 @@ mkdir -p "$SAVER/Contents/MacOS"
 echo "==> [1/3] Headless shader-check (compile MSL + pipeline on GPU)"
 swiftc -O -target "$TARGET" -framework Metal -framework QuartzCore \
     -o "$BUILD/shader-check" \
-    "$DIR/Sources/AuroraShader.swift" "$DIR/Sources/AuroraFluxFluid.swift" "$DIR/shader-check.swift"
+    "$DIR/Sources/AuroraShader.swift" "$DIR/Sources/AuroraFluxFluid.swift" \
+    "$DIR/Sources/AuroraParticleSwarm.swift" "$DIR/shader-check.swift"
 "$BUILD/shader-check"
 
 # GPU-cost gate: measure every scene's real per-frame GPU time and FAIL the build

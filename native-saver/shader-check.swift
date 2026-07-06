@@ -43,7 +43,12 @@ struct ShaderCheck {
                 throw NSError(domain: "aurora", code: 5,
                               userInfo: [NSLocalizedDescriptionKey: "Flux fluid pipeline failed to build"])
             }
-            print("shader-check OK on \(device.name): pipeline built, uniforms stride=\(stride), flux fluid OK")
+            // Particle Swarm's point-primitive MSL also compiles at runtime; build it.
+            guard AuroraParticleSwarm(device: device, drawablePixelFormat: .bgra8Unorm) != nil else {
+                throw NSError(domain: "aurora", code: 6,
+                              userInfo: [NSLocalizedDescriptionKey: "Particle Swarm pipeline failed to build"])
+            }
+            print("shader-check OK on \(device.name): pipeline built, uniforms stride=\(stride), flux fluid OK, particle swarm OK")
             exit(0)
         } catch {
             FileHandle.standardError.write("shader-check FAILED: \(error)\n".data(using: .utf8)!)

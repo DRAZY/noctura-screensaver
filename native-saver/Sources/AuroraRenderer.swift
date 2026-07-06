@@ -25,6 +25,12 @@ final class AuroraRenderer {
     private var fluxTried = false
     private static let fluxSceneIndex: Float = 16
 
+    /// The real 60k-point Particle Swarm (scene 17), built lazily like the fluid.
+    /// Falls back to the per-pixel `sceneParticles` fragment if it can't build.
+    private var particleSwarm: AuroraParticleSwarm?
+    private var swarmTried = false
+    private static let swarmSceneIndex: Float = 17
+
     private(set) var uniforms = AuroraUniforms()
 
     /// Last measured GPU execution time for a single frame, in seconds. Populated
@@ -148,6 +154,24 @@ final class AuroraRenderer {
             }
             if let flux = fluxFluid {
                 flux.encode(into: cmd, target: drawable.texture, uniforms: uniforms)
+                cmd.addCompletedHandler { [gpuFrameTimeLock] buffer in
+                    let span = buffer.gpuEndTime - buffer.gpuStartTime
+                    if span > 0 { gpuFrameTimeLock.withLock { $0 = span } }
+                }
+                cmd.present(drawable)
+                cmd.commit()
+                return true
+            }
+        }
+
+        // Particle Swarm (scene 17): real 60k-point cloud. Built on first use.
+        if uniforms.scene == AuroraRenderer.swarmSceneIndex {
+            if !swarmTried {
+                swarmTried = true
+                particleSwarm = AuroraParticleSwarm(device: device, drawablePixelFormat: pixelFormat)
+            }
+            if let swarm = particleSwarm {
+                swarm.encode(into: cmd, target: drawable.texture, uniforms: uniforms)
                 cmd.addCompletedHandler { [gpuFrameTimeLock] buffer in
                     let span = buffer.gpuEndTime - buffer.gpuStartTime
                     if span > 0 { gpuFrameTimeLock.withLock { $0 = span } }

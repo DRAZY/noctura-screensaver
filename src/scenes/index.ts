@@ -7,6 +7,7 @@ import { Drift } from "./Drift";
 import { Fireflies } from "./Fireflies";
 import { FlowingParticles } from "./FlowingParticles";
 import { FractalBloom } from "./FractalBloom";
+import { ParticleDrift } from "./ParticleDrift";
 import { Kaleidoscope } from "./Kaleidoscope";
 import { LiquidChrome } from "./LiquidChrome";
 import { MatrixRain } from "./MatrixRain";
@@ -26,7 +27,9 @@ export function registerAllScenes(manager: SceneManager): void {
   manager.register(new AmbientGradient());
   manager.register(new AuroraRibbons());
   manager.register(new Starfield());
-  manager.register(new FlowingParticles());
+  // Index 3 — the per-pixel particle field (matches the native .saver/.scr look).
+  // The 60k-point "Particle Swarm" is registered last, at index 17.
+  manager.register(new ParticleDrift());
   manager.register(new Plasma());
   manager.register(new MatrixRain());
   manager.register(new Fireflies());
@@ -43,4 +46,7 @@ export function registerAllScenes(manager: SceneManager): void {
   manager.register(new FractalBloom());
   // Index 16 — appended to keep saved indices and the native dispatch order stable.
   manager.register(new Drift());
+  // Index 17 — the 60k real-instanced-point curl-noise swarm (was "Particle Drift"
+  // in earlier builds; renamed to distinguish it from the per-pixel field at index 3).
+  manager.register(new FlowingParticles());
 }

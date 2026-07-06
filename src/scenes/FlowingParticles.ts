@@ -61,8 +61,8 @@ void main() {
 
 export class FlowingParticles implements Scene {
   readonly id = "flowing-particles";
-  readonly name = "Particle Drift";
-  readonly description = "Luminous points streaming through a curl-noise flow.";
+  readonly name = "Particle Swarm";
+  readonly description = "A swarm of 60k luminous points streaming through a curl-noise flow.";
 
   readonly parameters = NATIVE_PARAMETERS;
 
