@@ -241,7 +241,9 @@ extension AuroraParticleSwarm {
         float core = smoothstep(0.5, 0.0, d);
         float halo = smoothstep(0.5, 0.15, d);
         float a = core * core;
-        return float4(in.color * in.glow * (1.6 * core + 0.5 * halo) * a, a);
+        // RGB is NOT pre-multiplied by alpha — the SRC_ALPHA blend applies it once,
+        // matching the web (screen += RGB * core²). Multiplying here too gave core⁴.
+        return float4(in.color * in.glow * (1.6 * core + 0.5 * halo), a);
     }
     """
 }

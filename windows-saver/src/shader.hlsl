@@ -851,6 +851,7 @@ float4 PSMain(VSOut inp) : SV_Target {
     else if (s == 14) col = sceneNebula(inp.uv, aspect);
     else if (s == 15) col = sceneFractal(inp.uv, aspect);
     else if (s == 16) col = sceneDrift(inp.uv, aspect);
+    else if (s == 17) col = sceneParticles(inp.uv, aspect);
     else             col = sceneAurora(inp.uv, aspect);
     col += ditherRGB(inp.pos.xy);
     return float4(col, 1.0);

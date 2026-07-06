@@ -11,11 +11,11 @@ use windows::Win32::System::Registry::{
 };
 
 /// 17 scenes, in the shader's `u.scene` dispatch order.
-pub const SCENES: [&str; 17] = [
+pub const SCENES: [&str; 18] = [
     "Aurora Drift", "Northern Lights", "Deep Space", "Particle Drift", "Plasma Field",
     "Matrix Rain", "Fireflies", "Black Hole", "Hyperspace Tunnel", "Synthwave",
     "Kaleidoscope", "Caustics", "Polar Clock", "Liquid Chrome", "Nebula Drift",
-    "Fractal Bloom", "Flux Drift",
+    "Fractal Bloom", "Flux Drift", "Particle Swarm",
 ];
 
 /// A three-stop color palette the scenes blend between.

@@ -7,6 +7,8 @@
 //! chain whose back buffer can be smaller than the window; Present stretches it
 //! to fill the window, which is how the performance-scale modes cut GPU cost.
 
+use std::ffi::c_void;
+
 use windows::core::{s, w, Error, Interface, Result, PCSTR, PCWSTR};
 use windows::Win32::Foundation::{BOOL, HWND, TRUE};
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -28,7 +30,7 @@ use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_10_0,
     D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
-    D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP, ID3DBlob,
+    D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP, D3D_SRV_DIMENSION_BUFFER, ID3DBlob,
 };
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{
@@ -105,13 +107,33 @@ struct LineParams {
 
 const _: () = assert!(std::mem::size_of::<LineParams>() == 112);
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SwarmParams {
+    model_view: [[f32; 4]; 4],
+    proj: [[f32; 4]; 4],
+    time: f32,
+    speed: f32,
+    scale: f32,
+    size: f32,
+    color_a: [f32; 4],
+    color_b: [f32; 4],
+    point_scale: f32,
+    resolution: [f32; 2],
+    pad0: f32,
+}
+
+const _: () = assert!(std::mem::size_of::<SwarmParams>() == 192);
+
 const SHADER_SRC: &str = include_str!("shader.hlsl");
 const FLUX_SRC: &str = include_str!("flux.hlsl");
+const PARTICLES_SRC: &str = include_str!("particles.hlsl");
 
 const GX: u32 = 128;
 const GY: u32 = 72;
 const NUM_LINES: u32 = 9216;
 const FLUID: u32 = 128;
+const MAX_PARTICLES: u32 = 60000;
 const TIME_SCALE: f32 = 0.115;
 const VEL_GAIN: f32 = 10.0;
 const DISSIPATION: f32 = 2.0;
@@ -569,6 +591,199 @@ impl FluxFluid {
     }
 }
 
+struct ParticleSwarm {
+    vs: ID3D11VertexShader,
+    ps: ID3D11PixelShader,
+    seed_srv: ID3D11ShaderResourceView,
+    #[allow(dead_code)]
+    seed_buf: ID3D11Buffer,
+    add_blend: ID3D11BlendState,
+    swarm_cb: ID3D11Buffer,
+}
+
+impl ParticleSwarm {
+    fn new(device: &ID3D11Device, vs_target: PCSTR, ps_target: PCSTR) -> Option<ParticleSwarm> {
+        unsafe {
+            (|| -> Result<ParticleSwarm> {
+                let make_vs = |entry: PCSTR, target: PCSTR| -> Result<ID3D11VertexShader> {
+                    let blob = compile_src(PARTICLES_SRC, entry, target)?;
+                    let bytes = std::slice::from_raw_parts(
+                        blob.GetBufferPointer() as *const u8,
+                        blob.GetBufferSize(),
+                    );
+                    let mut sh = None;
+                    device.CreateVertexShader(bytes, None, Some(&mut sh))?;
+                    sh.ok_or_else(Error::from_win32)
+                };
+                let make_ps = |entry: PCSTR, target: PCSTR| -> Result<ID3D11PixelShader> {
+                    let blob = compile_src(PARTICLES_SRC, entry, target)?;
+                    let bytes = std::slice::from_raw_parts(
+                        blob.GetBufferPointer() as *const u8,
+                        blob.GetBufferSize(),
+                    );
+                    let mut sh = None;
+                    device.CreatePixelShader(bytes, None, Some(&mut sh))?;
+                    sh.ok_or_else(Error::from_win32)
+                };
+
+                let vs = make_vs(s!("swarm_vertex"), vs_target)?;
+                let ps = make_ps(s!("swarm_fragment"), ps_target)?;
+
+                let mut s: u32 = 0x2545f491;
+                let mut rand = || {
+                    s ^= s << 13;
+                    s ^= s >> 17;
+                    s ^= s << 5;
+                    (s % 100000) as f32 / 100000.0
+                };
+                let mut data: Vec<[f32; 4]> = Vec::with_capacity(MAX_PARTICLES as usize);
+                for _ in 0..MAX_PARTICLES {
+                    let x = (rand() - 0.5) * 3.0;
+                    let y = (rand() - 0.5) * 3.0;
+                    let z = (rand() - 0.5) * 3.0;
+                    let r = rand();
+                    data.push([x, y, z, r]);
+                }
+
+                let seed_desc = D3D11_BUFFER_DESC {
+                    ByteWidth: MAX_PARTICLES * 16,
+                    Usage: D3D11_USAGE_IMMUTABLE,
+                    BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                    ..Default::default()
+                };
+                let seed_init = D3D11_SUBRESOURCE_DATA {
+                    pSysMem: data.as_ptr() as *const c_void,
+                    ..Default::default()
+                };
+                let mut seed_buf = None;
+                device.CreateBuffer(&seed_desc, Some(&seed_init), Some(&mut seed_buf))?;
+                let seed_buf = seed_buf.ok_or_else(Error::from_win32)?;
+
+                let seed_srv_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                    Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    ViewDimension: D3D_SRV_DIMENSION_BUFFER,
+                    Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                        Buffer: D3D11_BUFFER_SRV {
+                            Anonymous1: D3D11_BUFFER_SRV_0 { FirstElement: 0 },
+                            Anonymous2: D3D11_BUFFER_SRV_1 {
+                                NumElements: MAX_PARTICLES,
+                            },
+                        },
+                    },
+                };
+                let mut seed_srv = None;
+                device.CreateShaderResourceView(
+                    &seed_buf,
+                    Some(&seed_srv_desc),
+                    Some(&mut seed_srv),
+                )?;
+
+                let mut blend_desc = D3D11_BLEND_DESC::default();
+                blend_desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
+                    BlendEnable: TRUE,
+                    SrcBlend: D3D11_BLEND_SRC_ALPHA,
+                    DestBlend: D3D11_BLEND_ONE,
+                    BlendOp: D3D11_BLEND_OP_ADD,
+                    SrcBlendAlpha: D3D11_BLEND_ONE,
+                    DestBlendAlpha: D3D11_BLEND_ONE,
+                    BlendOpAlpha: D3D11_BLEND_OP_ADD,
+                    RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+                    ..Default::default()
+                };
+                let mut add_blend = None;
+                device.CreateBlendState(&blend_desc, Some(&mut add_blend))?;
+
+                let swarm_cb_desc = D3D11_BUFFER_DESC {
+                    ByteWidth: std::mem::size_of::<SwarmParams>() as u32,
+                    Usage: D3D11_USAGE_DYNAMIC,
+                    BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
+                    CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
+                    ..Default::default()
+                };
+                let mut swarm_cb = None;
+                device.CreateBuffer(&swarm_cb_desc, None, Some(&mut swarm_cb))?;
+
+                Ok(ParticleSwarm {
+                    vs,
+                    ps,
+                    seed_srv: seed_srv.ok_or_else(Error::from_win32)?,
+                    seed_buf,
+                    add_blend: add_blend.ok_or_else(Error::from_win32)?,
+                    swarm_cb: swarm_cb.ok_or_else(Error::from_win32)?,
+                })
+            })()
+            .map_err(|e| {
+                crate::log::line(&format!("ParticleSwarm::new failed: {e}"));
+                e
+            })
+            .ok()
+        }
+    }
+
+    unsafe fn upload(&self, ctx: &ID3D11DeviceContext, p: &SwarmParams) {
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        if ctx
+            .Map(&self.swarm_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))
+            .is_ok()
+        {
+            std::ptr::copy_nonoverlapping(
+                p as *const SwarmParams as *const u8,
+                mapped.pData as *mut u8,
+                std::mem::size_of::<SwarmParams>(),
+            );
+            ctx.Unmap(&self.swarm_cb, 0);
+        }
+    }
+
+    unsafe fn encode(&self, ctx: &ID3D11DeviceContext, surf: &Surface, u: &Uniforms) {
+        let aspect = surf.bb_w as f32 / (surf.bb_h as f32).max(1.0);
+        let view = mat4_translate(0.0, 0.0, -3.2);
+        let model = mat4_rotate_y(u.time * 0.03);
+        let model_view = mat4_mul(view, model);
+        let proj = mat4_perspective(60.0_f32.to_radians(), aspect, 0.1, 100.0);
+        let p = SwarmParams {
+            model_view,
+            proj,
+            time: u.time,
+            speed: 0.85 * (u.speed / 0.3),
+            scale: 1.0,
+            size: 3.4 * (u.size / 0.85),
+            color_a: u.color_b,
+            color_b: u.color_c,
+            point_scale: (surf.bb_h as f32 / 900.0).max(0.4),
+            resolution: [surf.bb_w as f32, surf.bb_h as f32],
+            pad0: 0.0,
+        };
+
+        ctx.RSSetViewports(Some(&[D3D11_VIEWPORT {
+            Width: surf.bb_w as f32,
+            Height: surf.bb_h as f32,
+            MinDepth: 0.0,
+            MaxDepth: 1.0,
+            ..Default::default()
+        }]));
+        ctx.OMSetRenderTargets(Some(&[Some(surf.rtv.clone())]), None);
+        ctx.ClearRenderTargetView(&surf.rtv, &[0.008, 0.012, 0.039, 1.0]);
+        ctx.OMSetBlendState(Some(&self.add_blend), None, 0xffffffff);
+        self.upload(ctx, &p);
+        let srvs = [Some(self.seed_srv.clone())];
+        let cbs = [Some(self.swarm_cb.clone())];
+        ctx.VSSetShaderResources(0, Some(&srvs));
+        ctx.VSSetConstantBuffers(1, Some(&cbs));
+        ctx.VSSetShader(&self.vs, None);
+        ctx.PSSetShader(&self.ps, None);
+        ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        let count = ((MAX_PARTICLES as f32) * u.density.clamp(0.0, 1.0))
+            .floor()
+            .max(1.0) as u32;
+        ctx.DrawInstanced(4, count, 0, 0);
+
+        ctx.OMSetBlendState(None, None, 0xffffffff);
+        ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx.VSSetShaderResources(0, Some(&[None]));
+    }
+}
+
 /// Shared Direct3D device, compiled shaders, and constant buffer. Also owns the
 /// Direct2D + DirectWrite factories used to draw the clock overlay on top of the
 /// rendered scene (sharp vector text, mirroring the macOS / app clock).
@@ -584,6 +799,8 @@ pub struct Gfx {
     dwrite: IDWriteFactory,
     flux: std::cell::RefCell<Option<FluxFluid>>,
     flux_tried: std::cell::Cell<bool>,
+    swarm: std::cell::RefCell<Option<ParticleSwarm>>,
+    swarm_tried: std::cell::Cell<bool>,
     flux_sm5: bool,
 }
 
@@ -648,6 +865,50 @@ unsafe fn compile_src(src: &str, entry: PCSTR, target: PCSTR) -> Result<ID3DBlob
 
 unsafe fn compile(entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
     compile_src(SHADER_SRC, entry, target)
+}
+
+fn mat4_perspective(fovy_rad: f32, aspect: f32, near: f32, far: f32) -> [[f32; 4]; 4] {
+    let f = 1.0 / (fovy_rad * 0.5).tan();
+    [
+        [f / aspect, 0.0, 0.0, 0.0],
+        [0.0, f, 0.0, 0.0],
+        [0.0, 0.0, (far + near) / (near - far), -1.0],
+        [0.0, 0.0, 2.0 * far * near / (near - far), 0.0],
+    ]
+}
+
+fn mat4_rotate_y(a: f32) -> [[f32; 4]; 4] {
+    let c = a.cos();
+    let s = a.sin();
+    [
+        [c, 0.0, -s, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [s, 0.0, c, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
+fn mat4_translate(x: f32, y: f32, z: f32) -> [[f32; 4]; 4] {
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [x, y, z, 1.0],
+    ]
+}
+
+fn mat4_mul(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut out = [[0.0; 4]; 4];
+    for col in 0..4 {
+        for row in 0..4 {
+            let mut sum = 0.0;
+            for k in 0..4 {
+                sum += a[k][row] * b[col][k];
+            }
+            out[col][row] = sum;
+        }
+    }
+    out
 }
 
 /// The DXGI adapter with the lowest power draw (the integrated GPU on a dual-GPU
@@ -821,6 +1082,8 @@ impl Gfx {
                 dwrite,
                 flux: std::cell::RefCell::new(None),
                 flux_tried: std::cell::Cell::new(false),
+                swarm: std::cell::RefCell::new(None),
+                swarm_tried: std::cell::Cell::new(false),
                 flux_sm5: fl11,
             })
         }
@@ -920,7 +1183,7 @@ impl Gfx {
             self.context.RSSetViewports(Some(&[vp]));
             self.context.RSSetState(&self.raster);
             let mut scene_drawn = false;
-            if (u.scene + 0.5) as i32 == 16 {
+            if !scene_drawn && (u.scene + 0.5) as i32 == 16 {
                 if !self.flux_tried.get() {
                     self.flux_tried.set(true);
                     let targets = if self.flux_sm5 {
@@ -932,6 +1195,22 @@ impl Gfx {
                 }
                 if let Some(flux) = self.flux.borrow_mut().as_mut() {
                     flux.encode(&self.context, surf, u);
+                    scene_drawn = true;
+                }
+            }
+            if !scene_drawn && (u.scene + 0.5) as i32 == 17 {
+                if !self.swarm_tried.get() {
+                    self.swarm_tried.set(true);
+                    let targets = if self.flux_sm5 {
+                        (s!("vs_5_0"), s!("ps_5_0"))
+                    } else {
+                        (s!("vs_4_0"), s!("ps_4_0"))
+                    };
+                    *self.swarm.borrow_mut() =
+                        ParticleSwarm::new(&self.device, targets.0, targets.1);
+                }
+                if let Some(sw) = self.swarm.borrow().as_ref() {
+                    sw.encode(&self.context, surf, u);
                     scene_drawn = true;
                 }
             }
