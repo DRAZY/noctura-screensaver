@@ -34,7 +34,7 @@ Grab the latest build from the [**Releases**](../../releases/latest) page.
 
 18 scenes — **Flux Drift** · Aurora Drift · Northern Lights · Nebula Drift · Fractal Bloom · Liquid Chrome · Caustics · Plasma Field · Kaleidoscope · Black Hole · Hyperspace Tunnel · Deep Space · Particle Drift · **Particle Swarm** · Fireflies · Matrix Rain · Synthwave · Polar Clock
 
-**Flux Drift** is the newest scene: a faithful port of [sandydoo/Flux](https://github.com/sandydoo/flux) driven by a real GPU **Stable-Fluids** simulation — thousands of luminous blades combed along an evolving velocity field of swirling vortices.
+**Flux Drift** is the newest scene: similar to Drift screensaver in MacOS - driven by a real GPU **Stable-Fluids** simulation — thousands of luminous blades combed along an evolving velocity field of swirling vortices.
 
 Each scene below is shown in a **different one of the 13 color Styles**, to hint at the range — every scene works with every palette.
 
