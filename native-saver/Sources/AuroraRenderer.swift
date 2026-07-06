@@ -15,6 +15,15 @@ final class AuroraRenderer {
     let device: MTLDevice
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
+    private let pixelFormat: MTLPixelFormat
+
+    /// The real multi-pass fluid Flux Drift (scene 16). Built lazily the first time
+    /// Flux Drift is shown, so users who never select it pay nothing. If it fails to
+    /// build, `fluxTried` stays true and the renderer falls back to the per-pixel
+    /// `sceneDrift` shader in `aurora_fragment`.
+    private var fluxFluid: AuroraFluxFluid?
+    private var fluxTried = false
+    private static let fluxSceneIndex: Float = 16
 
     private(set) var uniforms = AuroraUniforms()
 
@@ -56,6 +65,7 @@ final class AuroraRenderer {
         }
         self.device = device
         self.queue = queue
+        self.pixelFormat = pixelFormat
 
         do {
             let library = try device.makeLibrary(source: AuroraShaderSource.metal, options: nil)
@@ -128,6 +138,25 @@ final class AuroraRenderer {
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         pass.colorAttachments[0].storeAction = .store
+
+        // Flux Drift (scene 16): run the real multi-pass fluid simulation. Built on
+        // first use; falls back to the single-pass shader below if it can't build.
+        if uniforms.scene == AuroraRenderer.fluxSceneIndex {
+            if !fluxTried {
+                fluxTried = true
+                fluxFluid = AuroraFluxFluid(device: device, drawablePixelFormat: pixelFormat)
+            }
+            if let flux = fluxFluid {
+                flux.encode(into: cmd, target: drawable.texture, uniforms: uniforms)
+                cmd.addCompletedHandler { [gpuFrameTimeLock] buffer in
+                    let span = buffer.gpuEndTime - buffer.gpuStartTime
+                    if span > 0 { gpuFrameTimeLock.withLock { $0 = span } }
+                }
+                cmd.present(drawable)
+                cmd.commit()
+                return true
+            }
+        }
 
         guard let enc = cmd.makeRenderCommandEncoder(descriptor: pass) else { return false }
         enc.setRenderPipelineState(pipeline)

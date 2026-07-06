@@ -35,7 +35,15 @@ struct ShaderCheck {
                 throw NSError(domain: "aurora", code: 4,
                               userInfo: [NSLocalizedDescriptionKey: "unexpected AuroraUniforms stride \(stride)"])
             }
-            print("shader-check OK on \(device.name): pipeline built, uniforms stride=\(stride)")
+            // Flux Drift's multi-pass fluid MSL compiles at runtime via
+            // makeLibrary(source:), so a syntax error there wouldn't fail the Swift
+            // build — instantiate the whole fluid pipeline here to catch it. This
+            // builds all 10 fluid/line pipelines + textures on the real GPU.
+            guard AuroraFluxFluid(device: device, drawablePixelFormat: .bgra8Unorm) != nil else {
+                throw NSError(domain: "aurora", code: 5,
+                              userInfo: [NSLocalizedDescriptionKey: "Flux fluid pipeline failed to build"])
+            }
+            print("shader-check OK on \(device.name): pipeline built, uniforms stride=\(stride), flux fluid OK")
             exit(0)
         } catch {
             FileHandle.standardError.write("shader-check FAILED: \(error)\n".data(using: .utf8)!)
