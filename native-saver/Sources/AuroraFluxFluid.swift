@@ -63,7 +63,8 @@ final class AuroraFluxFluid {
     private var simTime: Float = 0
     private var lastTime: Float = -1
     private var accumulator: Float = 0
-    private var warmedUp = false
+    private var warmupLeft: Int = 150   // fluid warm-up steps remaining (amortized across frames)
+    private var cleared = false          // whether the sim textures were zero-cleared once
 
     init?(device: MTLDevice, drawablePixelFormat: MTLPixelFormat) {
         self.device = device
@@ -151,13 +152,24 @@ final class AuroraFluxFluid {
         lineParams.velGain = AuroraFluxFluid.VEL_GAIN
         lineParams.time = simTime
 
-        if !warmedUp {
-            warmedUp = true
-            // Metal .private textures start with UNDEFINED contents; the sim assumes
-            // velocity/pressure/state all begin at zero (like a freshly-cleared WebGL
-            // render target). Clear them first, or the field is garbage/NaN.
+        // Metal .private textures start with UNDEFINED contents; the sim assumes
+        // velocity/pressure/state all begin at zero (like a freshly-cleared WebGL
+        // render target). Clear them once, or the field is garbage/NaN.
+        if !cleared {
+            cleared = true
             for t in [velA, velB, prsA, prsB, divT, noiseT, fwdT, revT, stateA, stateB] { clearZero(cmd, t) }
-            for _ in 0..<150 { simTime += step; fluidStep(cmd, dt: step, noiseMult: Float(noiseMult)) }
+        }
+        // Amortized warm-up: run a bounded number of fluid steps per frame instead of
+        // a 150-step burst on frame one. A burst is ~150×29 ≈ 4350 draws in a single
+        // frame — a multi-second stall on slower GPUs (and on Windows it can trip the
+        // 2 s TDR watchdog). At 8/frame the field develops in ~19 frames (~0.3 s) with
+        // no stall. Kept identical to the Windows renderer for cross-platform parity.
+        if warmupLeft > 0 {
+            let n = min(warmupLeft, 8)
+            for _ in 0..<n { simTime += step; fluidStep(cmd, dt: step, noiseMult: Float(noiseMult)) }
+            lineParams.time = simTime
+            springStep(cmd, dt: step)   // settle the blades alongside the developing fluid
+            warmupLeft -= n
         }
 
         // Advance sim in fixed 1/60 chunks scaled by TIME_SCALE (deterministic, fps-independent).

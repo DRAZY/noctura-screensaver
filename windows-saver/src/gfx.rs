@@ -142,6 +142,14 @@ const VISCOSITY: f32 = 5.0;
 const DIFFUSE_ITERS: usize = 3;
 const PRESSURE_ITERS: usize = 19;
 const STEP: f32 = 1.0 / 60.0;
+/// Total fluid warm-up steps so the first visible frame already has structure.
+const WARMUP_STEPS: u32 = 150;
+/// Warm-up steps run PER FRAME. The 150-step warm-up must be amortized across
+/// frames: doing it in one burst is ~150×29 ≈ 4350 D3D11 draws in a single frame,
+/// which freezes for seconds and can trip Windows' 2-second GPU TDR watchdog —
+/// resetting the device, which then falls back to the old per-pixel Flux Drift.
+/// At 8/frame it finishes in ~19 frames (~0.3 s) with no stall.
+const WARMUP_PER_FRAME: u32 = 8;
 
 struct Tex {
     // Ownership anchor: keep the resource alive for the struct's lifetime. The RTV
@@ -210,7 +218,8 @@ struct FluxFluid {
     sim_time: f32,
     last_time: f32,
     accumulator: f32,
-    warmed_up: bool,
+    warmup_left: u32,   // fluid warm-up steps still to run, amortized across frames
+    cleared: bool,      // whether the sim textures have been zero-cleared once
 }
 
 impl FluxFluid {
@@ -343,7 +352,8 @@ impl FluxFluid {
                     sim_time: 0.0,
                     last_time: -1.0,
                     accumulator: 0.0,
-                    warmed_up: false,
+                    warmup_left: WARMUP_STEPS,
+                    cleared: false,
                 })
             })()
             .map_err(|e| {
@@ -523,8 +533,10 @@ impl FluxFluid {
             color_c: u.color_c,
         };
 
-        if !self.warmed_up {
-            self.warmed_up = true;
+        // One-time: D3D11 textures are not guaranteed zero-initialized, and the sim
+        // assumes velocity/pressure/state start at zero (like a cleared WebGL RT).
+        if !self.cleared {
+            self.cleared = true;
             for t in [
                 &self.vel_a,
                 &self.vel_b,
@@ -539,10 +551,20 @@ impl FluxFluid {
             ] {
                 ctx.ClearRenderTargetView(&t.rtv, &[0.0, 0.0, 0.0, 0.0]);
             }
-            for _ in 0..150 {
+        }
+        // Amortized warm-up: run a bounded number of fluid steps per frame (never a
+        // 150-step burst) so no single frame stalls / trips the GPU TDR watchdog.
+        if self.warmup_left > 0 {
+            let n = self.warmup_left.min(WARMUP_PER_FRAME);
+            for _ in 0..n {
                 self.sim_time += STEP;
                 self.fluid_step(ctx, STEP, noise_mult);
             }
+            // Advance the springs once per warm-up frame so the blades settle in
+            // alongside the developing fluid instead of popping in at the end.
+            line.time = self.sim_time;
+            self.spring_step(ctx, &line);
+            self.warmup_left -= n;
         }
 
         self.accumulator += real_delta * TIME_SCALE * (u.speed / 0.3);
@@ -827,6 +849,9 @@ pub struct Surface {
     pub bb_h: u32,
 }
 
+/// `D3DCOMPILE_SKIP_OPTIMIZATION` — skip the optimizer for a much faster compile.
+const D3DCOMPILE_SKIP_OPTIMIZATION: u32 = 1 << 2;
+
 unsafe fn compile_src(src: &str, entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
     let mut blob: Option<ID3DBlob> = None;
     let mut errors: Option<ID3DBlob> = None;
@@ -838,7 +863,12 @@ unsafe fn compile_src(src: &str, entry: PCSTR, target: PCSTR) -> Result<ID3DBlob
         None,
         entry,
         target,
-        0,
+        // D3DCOMPILE_SKIP_OPTIMIZATION (1<<2): skip the optimizer. These shaders are
+        // simple per-pass kernels, but the all-scenes PSMain is large and the fluid
+        // adds ~10 more entry points — full optimization at every process launch
+        // (the Control Panel spawns a fresh preview process on each interaction) is a
+        // big part of the "atrociously slow" selection UX. Runtime cost is negligible.
+        D3DCOMPILE_SKIP_OPTIMIZATION,
         0,
         &mut blob,
         Some(&mut errors),
