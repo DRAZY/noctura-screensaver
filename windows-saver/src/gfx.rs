@@ -225,9 +225,37 @@ struct FluxFluid {
 impl FluxFluid {
     fn new(device: &ID3D11Device, vs_target: PCSTR, ps_target: PCSTR) -> Option<FluxFluid> {
         unsafe {
+            // Probe the float render-target formats the fluid needs. A GPU/driver
+            // that can't render to these would fail Tex::make below and silently
+            // drop back to the per-pixel scene; log support up front so the field
+            // log pinpoints it instead of leaving a bare HRESULT.
+            let probe = |fmt: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT, name: &str| -> (bool, bool) {
+                let sup = device.CheckFormatSupport(fmt).unwrap_or(0);
+                let rt = (sup & D3D11_FORMAT_SUPPORT_RENDER_TARGET.0 as u32) != 0;
+                let samp = (sup & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0 as u32) != 0;
+                crate::log::line(&format!("flux: format {name}: render_target={rt} shader_sample={samp}"));
+                (rt, samp)
+            };
+            let (_, rg_linear) = probe(DXGI_FORMAT_R32G32_FLOAT, "R32G32_FLOAT");
+            probe(DXGI_FORMAT_R32_FLOAT, "R32_FLOAT");
+            probe(DXGI_FORMAT_R32G32B32A32_FLOAT, "R32G32B32A32_FLOAT");
+            // Linear filtering of 32-bit float is OPTIONAL in D3D11; sampling a float
+            // texture with a linear sampler on a GPU that lacks it yields garbage/NaN
+            // (the web build makes the same nearest fallback). Pick the filter to
+            // match the hardware so the sim is correct everywhere.
+            let sampler_filter = if rg_linear {
+                D3D11_FILTER_MIN_MAG_MIP_LINEAR
+            } else {
+                crate::log::line("flux: float-linear unsupported — using point sampling");
+                D3D11_FILTER_MIN_MAG_MIP_POINT
+            };
+
             (|| -> Result<FluxFluid> {
-                let make_vs = |entry: PCSTR, target: PCSTR| -> Result<ID3D11VertexShader> {
-                    let blob = compile_src(FLUX_SRC, entry, target)?;
+                // Per-step labels so a failure names the exact shader/resource in the
+                // log (compile_src already logs FXC's error text on a shader failure).
+                let make_vs = |entry: PCSTR, target: PCSTR, label: &str| -> Result<ID3D11VertexShader> {
+                    let blob = compile_src(FLUX_SRC, entry, target)
+                        .map_err(|e| { crate::log::line(&format!("flux: VS compile '{label}' failed")); e })?;
                     let bytes = std::slice::from_raw_parts(
                         blob.GetBufferPointer() as *const u8,
                         blob.GetBufferSize(),
@@ -236,8 +264,9 @@ impl FluxFluid {
                     device.CreateVertexShader(bytes, None, Some(&mut sh))?;
                     sh.ok_or_else(Error::from_win32)
                 };
-                let make_ps = |entry: PCSTR, target: PCSTR| -> Result<ID3D11PixelShader> {
-                    let blob = compile_src(FLUX_SRC, entry, target)?;
+                let make_ps = |entry: PCSTR, target: PCSTR, label: &str| -> Result<ID3D11PixelShader> {
+                    let blob = compile_src(FLUX_SRC, entry, target)
+                        .map_err(|e| { crate::log::line(&format!("flux: PS compile '{label}' failed")); e })?;
                     let bytes = std::slice::from_raw_parts(
                         blob.GetBufferPointer() as *const u8,
                         blob.GetBufferSize(),
@@ -247,32 +276,36 @@ impl FluxFluid {
                     sh.ok_or_else(Error::from_win32)
                 };
 
-                let fs_vs = make_vs(s!("fs_vertex"), vs_target)?;
-                let line_vs = make_vs(s!("line_vertex"), vs_target)?;
-                let noise_ps = make_ps(s!("noise_frag"), ps_target)?;
-                let advect_ps = make_ps(s!("advect_frag"), ps_target)?;
-                let adjust_ps = make_ps(s!("adjust_frag"), ps_target)?;
-                let diffuse_ps = make_ps(s!("diffuse_frag"), ps_target)?;
-                let inject_ps = make_ps(s!("inject_frag"), ps_target)?;
-                let divergence_ps = make_ps(s!("divergence_frag"), ps_target)?;
-                let pressure_ps = make_ps(s!("pressure_frag"), ps_target)?;
-                let subtract_ps = make_ps(s!("subtract_frag"), ps_target)?;
-                let spring_ps = make_ps(s!("spring_frag"), ps_target)?;
-                let line_ps = make_ps(s!("line_fragment"), ps_target)?;
+                let fs_vs = make_vs(s!("fs_vertex"), vs_target, "fs_vertex")?;
+                let line_vs = make_vs(s!("line_vertex"), vs_target, "line_vertex")?;
+                let noise_ps = make_ps(s!("noise_frag"), ps_target, "noise_frag")?;
+                let advect_ps = make_ps(s!("advect_frag"), ps_target, "advect_frag")?;
+                let adjust_ps = make_ps(s!("adjust_frag"), ps_target, "adjust_frag")?;
+                let diffuse_ps = make_ps(s!("diffuse_frag"), ps_target, "diffuse_frag")?;
+                let inject_ps = make_ps(s!("inject_frag"), ps_target, "inject_frag")?;
+                let divergence_ps = make_ps(s!("divergence_frag"), ps_target, "divergence_frag")?;
+                let pressure_ps = make_ps(s!("pressure_frag"), ps_target, "pressure_frag")?;
+                let subtract_ps = make_ps(s!("subtract_frag"), ps_target, "subtract_frag")?;
+                let spring_ps = make_ps(s!("spring_frag"), ps_target, "spring_frag")?;
+                let line_ps = make_ps(s!("line_fragment"), ps_target, "line_fragment")?;
+                crate::log::line("flux: all 12 shaders compiled ok");
 
-                let vel_a = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT)?;
-                let vel_b = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT)?;
-                let noise_t = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT)?;
-                let fwd_t = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT)?;
-                let rev_t = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT)?;
-                let prs_a = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32_FLOAT)?;
-                let prs_b = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32_FLOAT)?;
-                let div_t = Tex::make(device, FLUID, FLUID, DXGI_FORMAT_R32_FLOAT)?;
-                let state_a = Tex::make(device, GX, GY, DXGI_FORMAT_R32G32B32A32_FLOAT)?;
-                let state_b = Tex::make(device, GX, GY, DXGI_FORMAT_R32G32B32A32_FLOAT)?;
+                let mktex = |w, h, fmt, label: &str| Tex::make(device, w, h, fmt)
+                    .map_err(|e| { crate::log::line(&format!("flux: texture '{label}' create failed")); e });
+                let vel_a = mktex(FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT, "vel_a")?;
+                let vel_b = mktex(FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT, "vel_b")?;
+                let noise_t = mktex(FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT, "noise_t")?;
+                let fwd_t = mktex(FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT, "fwd_t")?;
+                let rev_t = mktex(FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT, "rev_t")?;
+                let prs_a = mktex(FLUID, FLUID, DXGI_FORMAT_R32_FLOAT, "prs_a")?;
+                let prs_b = mktex(FLUID, FLUID, DXGI_FORMAT_R32_FLOAT, "prs_b")?;
+                let div_t = mktex(FLUID, FLUID, DXGI_FORMAT_R32_FLOAT, "div_t")?;
+                let state_a = mktex(GX, GY, DXGI_FORMAT_R32G32B32A32_FLOAT, "state_a")?;
+                let state_b = mktex(GX, GY, DXGI_FORMAT_R32G32B32A32_FLOAT, "state_b")?;
+                crate::log::line("flux: all 10 textures created ok");
 
                 let sampler_desc = D3D11_SAMPLER_DESC {
-                    Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+                    Filter: sampler_filter,
                     AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
                     AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
                     AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
@@ -356,8 +389,14 @@ impl FluxFluid {
                     cleared: false,
                 })
             })()
+            .map(|f| {
+                crate::log::line("flux: pipeline built OK — using real fluid Flux Drift");
+                f
+            })
             .map_err(|e| {
-                crate::log::line(&format!("FluxFluid::new failed: {e}"));
+                crate::log::line(&format!(
+                    "FluxFluid::new failed: {e} — falling back to per-pixel Flux Drift"
+                ));
                 e
             })
             .ok()
