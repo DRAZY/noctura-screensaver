@@ -63,7 +63,6 @@ final class AuroraFluxFluid {
     private var lineParams = LineParams()
     private var simTime: Float = 0
     private var lastTime: Float = -1
-    private var accumulator: Float = 0
     private var warmupLeft: Int = 150   // fluid warm-up steps remaining (amortized across frames)
     private var cleared = false          // whether the sim textures were zero-cleared once
 
@@ -147,7 +146,7 @@ final class AuroraFluxFluid {
     /// Draw one fluid-driven frame of Flux Drift into `target` (a drawable's
     /// texture in the live saver, or an offscreen texture in the headless harness).
     func encode(into cmd: MTLCommandBuffer, target: MTLTexture, uniforms u: AuroraUniforms) {
-        // Fixed-timestep accumulator (mirrors web update()). dt derived from scene time.
+        // Per-frame variable-dt stepping (mirrors web update()). dt from scene time.
         let now = u.time
         let realDelta: Float = (lastTime < 0) ? (1.0 / 60) : max(0, min(now - lastTime, 0.25))
         lastTime = now
@@ -183,18 +182,18 @@ final class AuroraFluxFluid {
             warmupLeft -= n
         }
 
-        // Advance sim in fixed 1/60 chunks scaled by TIME_SCALE (deterministic, fps-independent).
-        accumulator += realDelta * AuroraFluxFluid.TIME_SCALE * speedScale
-        var steps = 0
-        while accumulator >= step && steps < 4 {
-            simTime += step
+        // ONE smooth sim step per rendered frame (mirrors web Drift.update()): dt is
+        // real time scaled by TIME_SCALE, so motion advances a little EVERY frame —
+        // 60 Hz-smooth like flux.sandydoo.me — instead of a fixed-1/60-sim-step
+        // accumulator that only fired every ~9th frame (≈7 Hz stepping) and burned
+        // GPU re-rendering identical frames in between.
+        let dt = min(max(realDelta, 0), 0.05) * AuroraFluxFluid.TIME_SCALE * speedScale
+        if dt > 0 {
+            simTime += dt
             if simTime > 1000 { simTime -= 1000 }
-            fluidStep(cmd, dt: step, noiseMult: Float(noiseMult))
-            springStep(cmd, dt: step)
-            accumulator -= step
-            steps += 1
+            fluidStep(cmd, dt: dt, noiseMult: Float(noiseMult))
+            springStep(cmd, dt: dt)
         }
-        if accumulator > step { accumulator = step }
         lineParams.time = simTime
 
         // Final pass: draw the blades into the drawable.

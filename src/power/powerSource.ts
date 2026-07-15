@@ -6,14 +6,20 @@
  * Detection uses the Battery Status API (`navigator.getBattery`), which is
  * present in Chromium-based hosts: Windows WebView2 (the Tauri webview on
  * Windows), newer WebKitGTK (Linux), and Chromium browsers. macOS WKWebView (the
- * Tauri webview on macOS) does not implement it — there `watchPowerSource`
- * reports AC and stays out of the way, because the shipping macOS `.saver`
- * covers the real screensaver case with full IOKit power-source detection. The
- * `queryTauri` hook below is the seam where a native Tauri `power_status`
- * command can later feed WKWebView a real signal without touching callers.
+ * Tauri webview on macOS) does not implement it — there we poll the native
+ * Tauri `power_status` command (IOKit battery + Low Power Mode, mirroring the
+ * `.saver`) every {@link TAURI_POLL_MS}. Outside both hosts (plain browser
+ * without the API) we report AC and stay out of the way.
  */
 
 export type PowerState = "battery" | "ac" | "unknown";
+
+/**
+ * How often to re-ask the native side for the power source when the Battery
+ * Status API is unavailable (macOS WKWebView). A screensaver reacts to an
+ * unplug within this window; the call is a trivial IPC round-trip.
+ */
+const TAURI_POLL_MS = 30_000;
 
 /** The slice of the Battery Status API we rely on (charging + change events). */
 interface BatteryLike {
@@ -37,6 +43,8 @@ export function watchPowerSource(onChange: (onBattery: boolean) => void): () => 
       ? (navigator as Navigator & { getBattery?: () => Promise<BatteryLike> })
       : null;
 
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
   if (nav?.getBattery) {
     nav
       .getBattery()
@@ -54,14 +62,40 @@ export function watchPowerSource(onChange: (onBattery: boolean) => void): () => 
         // API present but rejected (host quirk / permissions) — assume AC.
         if (!disposed) onChange(false);
       });
+  } else if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    // No Battery API but we're inside the Tauri shell (macOS WKWebView): poll
+    // the native power_status command instead. Report only real transitions so
+    // callers aren't re-seeded every poll; "unknown" leaves the last state.
+    let last: boolean | null = null;
+    const poll = async (): Promise<void> => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const status = await invoke<PowerState>("power_status");
+        if (disposed || status === "unknown") return;
+        const onBattery = status === "battery";
+        if (onBattery !== last) {
+          last = onBattery;
+          onChange(onBattery);
+        }
+      } catch {
+        // Command missing (older shell) — behave like the old AC fallback once.
+        if (!disposed && last === null) {
+          last = false;
+          onChange(false);
+        }
+      }
+    };
+    void poll();
+    pollTimer = setInterval(() => void poll(), TAURI_POLL_MS);
   } else {
-    // No Battery API on this host (e.g. WKWebView) — assume AC and leave the
-    // profile to the user's chosen mode. The native saver handles battery there.
+    // No Battery API and not in Tauri (plain browser) — assume AC and leave
+    // the profile to the user's chosen mode. The native savers handle battery.
     onChange(false);
   }
 
   return () => {
     disposed = true;
+    if (pollTimer !== null) clearInterval(pollTimer);
     if (battery && listener) battery.removeEventListener("chargingchange", listener);
     battery = null;
     listener = null;

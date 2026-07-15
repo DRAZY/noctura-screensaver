@@ -219,7 +219,6 @@ struct FluxFluid {
     line_cb: ID3D11Buffer,
     sim_time: f32,
     last_time: f32,
-    accumulator: f32,
     warmup_left: u32,   // fluid warm-up steps still to run, amortized across frames
     cleared: bool,      // whether the sim textures have been zero-cleared once
 }
@@ -390,7 +389,6 @@ impl FluxFluid {
                     line_cb,
                     sim_time: 0.0,
                     last_time: -1.0,
-                    accumulator: 0.0,
                     warmup_left: WARMUP_STEPS,
                     cleared: false,
                 })
@@ -612,21 +610,20 @@ impl FluxFluid {
             self.warmup_left -= n;
         }
 
-        self.accumulator += real_delta * TIME_SCALE * (u.speed / 0.3);
-        let mut steps = 0;
-        while self.accumulator >= STEP && steps < 4 {
-            self.sim_time += STEP;
+        // ONE smooth sim step per rendered frame (mirrors web Drift.update()): dt is
+        // real time scaled by TIME_SCALE, so motion advances a little EVERY frame —
+        // 60 Hz-smooth like flux.sandydoo.me — instead of a fixed-1/60-sim-step
+        // accumulator that only fired every ~9th frame (≈7 Hz stepping) and burned
+        // GPU re-rendering identical frames in between.
+        let dt = real_delta.clamp(0.0, 0.05) * TIME_SCALE * (u.speed / 0.3);
+        if dt > 0.0 {
+            self.sim_time += dt;
             if self.sim_time > 1000.0 {
                 self.sim_time -= 1000.0;
             }
-            self.fluid_step(ctx, STEP, noise_mult);
-            line.delta_time = STEP;
+            self.fluid_step(ctx, dt, noise_mult);
+            line.delta_time = dt;
             self.spring_step(ctx, &line);
-            self.accumulator -= STEP;
-            steps += 1;
-        }
-        if self.accumulator > STEP {
-            self.accumulator = STEP;
         }
         line.time = self.sim_time;
 
