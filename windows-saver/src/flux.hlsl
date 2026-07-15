@@ -333,3 +333,57 @@ float4 line_fragment(LineVOut input) : SV_Target
     }
     return float4(input.color * a * glow, 1.0);
 }
+
+// ---- Rounded endpoint caps (Flux endpoint.vert / endpoint.frag) ----------------
+struct CapVOut
+{
+    float4 position : SV_Position;
+    float2 vtx : TEXCOORD0;
+    float2 dir : TEXCOORD1;
+    float3 color : TEXCOORD2;
+    float alpha : TEXCOORD3;
+};
+
+CapVOut cap_vertex(uint vid : SV_VertexID, uint iid : SV_InstanceID)
+{
+    uint cell = (iid * 7001u) % numLines;
+    uint cellX = cell % gx;
+    uint cellY = cell / gx;
+    float2 grid = float2(cellX, cellY);
+    float2 basepoint = (grid + 0.5) / gridSize;
+    float2 endpoint = gTexA.Load(int3(int(cellX), int(cellY), 0)).xy;
+    float2 fluidVel = gTexB.SampleLevel(samplerLinearClamp, basepoint, 0.0).xy * velGain;
+    float wb = clamp(2.5 * length(fluidVel), 0.0, 1.0);
+    float lineWidthWeight = wb * wb * (3.0 - 2.0 * wb);
+    // Quad corner in [-1,1]^2: (-1,-1),(1,-1),(-1,1),(1,1).
+    float2 corner = float2(((vid & 1u) == 0u) ? -1.0 : 1.0, (vid < 2u) ? -1.0 : 1.0);
+    // Quad centred on the line's head, half-size = half the line width (Flux:
+    // 0.5 * uLineWidth * iLineWidth * vertex), same pre-aspect-divide convention.
+    float2 head = float2(aspect, 1.0) * zoom * (basepoint * 2.0 - 1.0) + endpoint;
+    float2 pt = head + 0.5 * lineWidth * lineWidthWeight * corner;
+    pt.x /= aspect;
+
+    CapVOut o;
+    o.position = float4(pt, 0.0, 1.0);
+    o.vtx = corner;
+    o.dir = endpoint / (length(endpoint) + 1e-5);
+    float angle = atan2(fluidVel.y, fluidVel.x) / 6.28318 + 0.5;
+    o.color = palCyc(angle + 0.35 * (basepoint.x + basepoint.y) + 0.01 * time);
+    o.alpha = wb;
+    return o;
+}
+
+float4 cap_fragment(CapVOut input) : SV_Target
+{
+    float d = length(input.vtx);
+    float edge = 1.0 - smoothstep(1.0 - fwidth(d), 1.0, d);  // AA disc
+    // Keep only the half beyond the line's end; the line itself covers the rest.
+    float along = dot(input.vtx, input.dir);
+    float halfSide = smoothstep(-fwidth(along), fwidth(along), along);
+    float a = input.alpha * edge * halfSide;
+    if (a <= 0.0009)
+    {
+        discard;
+    }
+    return float4(input.color * a * glow, 1.0);
+}

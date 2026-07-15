@@ -153,6 +153,80 @@ void main() {
 }
 `;
 
+// ---- Rounded endpoint caps (Flux endpoint.vert/endpoint.frag) ----------------
+// Flux draws a small antialiased disc at each line's HEAD so blades end in a
+// rounded tip instead of a hard rectangle — a signature detail of the reference.
+// We render only the half-disc beyond the line's end (Flux's split-half trick,
+// adapted for additive blending) so the overlap with the line isn't doubled.
+const CAP_VERT = /* glsl */ `
+// ShaderMaterial(GLSL3) injects position (dummy); corner comes from aCorner.
+in vec2 aCorner;    // quad corner in [-1,1]^2
+in vec2 aGrid;      // grid cell (gx, gy)
+uniform sampler2D uState;
+uniform sampler2D uVelocity;
+uniform vec2  uGridSize;
+uniform float uAspect;
+uniform float uZoom;
+uniform float uLineWidth;
+uniform float uVelGain;
+uniform vec3  uColorA;
+uniform vec3  uColorB;
+uniform vec3  uColorC;
+uniform float uTime;
+out vec2  vVertex;
+out vec2  vDir;
+out vec3  vColor;
+out float vAlpha;
+
+vec3 palCyc(float x){
+  float f = fract(x);
+  if (f < 0.3333) return mix(uColorA, uColorB, f / 0.3333);
+  if (f < 0.6666) return mix(uColorB, uColorC, (f - 0.3333) / 0.3333);
+  return mix(uColorC, uColorA, (f - 0.6666) / 0.3334);
+}
+
+void main() {
+  vec2 stateUv = (aGrid + 0.5) / uGridSize;
+  vec2 basepoint = stateUv;
+  vec2 endpoint = texture(uState, stateUv).xy;
+  vec2 fluidVel = texture(uVelocity, basepoint).xy * uVelGain;
+  float wb = clamp(2.5 * length(fluidVel), 0.0, 1.0);
+  float lineWidth = wb * wb * (3.0 - 2.0 * wb);
+
+  // Quad centred on the line's head, half-size = half the line width (Flux:
+  // 0.5 * uLineWidth * iLineWidth * vertex), same pre-aspect-divide convention.
+  vec2 head = vec2(uAspect, 1.0) * uZoom * (basepoint * 2.0 - 1.0) + endpoint;
+  vec2 pt = head + 0.5 * uLineWidth * lineWidth * aCorner;
+  pt.x /= uAspect;
+  gl_Position = vec4(pt, 0.0, 1.0);
+
+  vVertex = aCorner;
+  vDir = endpoint / (length(endpoint) + 1e-5);   // line direction, for the half test
+  float angle = atan(fluidVel.y, fluidVel.x) / 6.28318 + 0.5;
+  vColor = palCyc(angle + 0.35 * (basepoint.x + basepoint.y) + 0.01 * uTime);
+  vAlpha = wb;
+}
+`;
+const CAP_FRAG = /* glsl */ `
+precision highp float;
+in vec2  vVertex;
+in vec2  vDir;
+in vec3  vColor;
+in float vAlpha;
+out vec4 fragColor;
+uniform float uGlow;
+void main() {
+  float d = length(vVertex);
+  float edge = 1.0 - smoothstep(1.0 - fwidth(d), 1.0, d);      // AA disc (Flux endpoint.frag)
+  // Keep only the half beyond the line's end; the line itself covers the rest.
+  float along = dot(vVertex, vDir);
+  float side = smoothstep(-fwidth(along), fwidth(along), along);
+  float a = vAlpha * edge * side;
+  if (a <= 0.0009) discard;
+  fragColor = vec4(vColor * a * uGlow, 1.0);                   // additive, matches line head
+}
+`;
+
 // Debug: view the raw fluid velocity field as colour (?fluxdebug=1).
 const DEBUG_VERT = /* glsl */ `
 in vec3 position;
@@ -228,6 +302,8 @@ export class Drift implements Scene {
 
   private lineMat!: THREE.ShaderMaterial;
   private lineMesh!: THREE.Mesh;
+  private capMat!: THREE.ShaderMaterial;
+  private capMesh!: THREE.Mesh;
 
   private debugMat: THREE.RawShaderMaterial | null = null;
   private readonly debugScene = new THREE.Scene();
@@ -343,6 +419,52 @@ export class Drift implements Scene {
     this.lineMesh.frustumCulled = false;
     this.scene.add(this.lineMesh);
 
+    // Rounded endpoint caps (Flux endpoint pass): same per-line layout, but the
+    // quad corner spans [-1,1]² and is centred on the head. Shares the dummy
+    // position, aGrid, and index buffers; only the corner attribute differs.
+    const capCornerPat = [-1, -1, 1, -1, -1, 1, 1, 1];
+    const aCapCorner = new Float32Array(N * 2);
+    for (let i = 0; i < NUM_LINES; i++) {
+      const base = i * 4;
+      for (let k = 0; k < 4; k++) {
+        aCapCorner[(base + k) * 2] = capCornerPat[k * 2];
+        aCapCorner[(base + k) * 2 + 1] = capCornerPat[k * 2 + 1];
+      }
+    }
+    const capGeo = new THREE.BufferGeometry();
+    capGeo.setAttribute("position", geo.getAttribute("position"));
+    capGeo.setAttribute("aCorner", new THREE.BufferAttribute(aCapCorner, 2));
+    capGeo.setAttribute("aGrid", geo.getAttribute("aGrid"));
+    capGeo.setIndex(geo.getIndex());
+    capGeo.setDrawRange(0, geo.drawRange.count);
+    this.capMat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: CAP_VERT,
+      fragmentShader: CAP_FRAG,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uState: { value: this.stateA.texture },
+        uVelocity: { value: this.fluid.velocityTexture },
+        uGridSize: { value: new THREE.Vector2(GX, GY) },
+        uAspect: { value: 1 },
+        uZoom: { value: 1.6 },
+        uLineWidth: { value: 0.011 },
+        uVelGain: { value: VEL_GAIN },
+        uGlow: { value: 1.0 + NATIVE.intensity },
+        uColorA: { value: hexToColor(p.a) },
+        uColorB: { value: hexToColor(p.b) },
+        uColorC: { value: hexToColor(p.c) },
+        uTime: { value: 0 },
+      },
+    });
+    this.capMesh = new THREE.Mesh(capGeo, this.capMat);
+    this.capMesh.frustumCulled = false;
+    this.scene.add(this.capMesh); // added after lines → draws on top
+
     this.applyControls();
 
     if (this.debug) {
@@ -398,6 +520,9 @@ export class Drift implements Scene {
     this.lineMat.uniforms.uState.value = this.stateA.texture;
     this.lineMat.uniforms.uVelocity.value = this.fluid.velocityTexture;
     this.lineMat.uniforms.uTime.value = this.simTime;
+    this.capMat.uniforms.uState.value = this.stateA.texture;
+    this.capMat.uniforms.uVelocity.value = this.fluid.velocityTexture;
+    this.capMat.uniforms.uTime.value = this.simTime;
     if (this.debugMat) this.debugMat.uniforms.uVelocity.value = this.fluid.velocityTexture;
   }
 
@@ -415,6 +540,7 @@ export class Drift implements Scene {
   resize(width: number, height: number): void {
     this.aspect = width / Math.max(height, 1);
     this.lineMat.uniforms.uAspect.value = this.aspect;
+    this.capMat.uniforms.uAspect.value = this.aspect;
   }
 
   setParameter(id: string, value: ParameterValue): void {
@@ -424,21 +550,27 @@ export class Drift implements Scene {
         break;
       case "intensity":
         this.lineMat.uniforms.uGlow.value = 1.0 + Number(value);
+        this.capMat.uniforms.uGlow.value = 1.0 + Number(value);
         break;
-      case "density":
+      case "density": {
         this.density = Number(value);
         // 0..1 → 0.5..1.0 fraction of lines drawn (stratified order = hole-free).
-        this.lineMesh.geometry.setDrawRange(0, Math.floor(NUM_LINES * (0.65 + 0.35 * this.density)) * 6);
+        const range = Math.floor(NUM_LINES * (0.65 + 0.35 * this.density)) * 6;
+        this.lineMesh.geometry.setDrawRange(0, range);
+        this.capMesh.geometry.setDrawRange(0, range);
         break;
+      }
       case "size":
         this.size = Number(value);
         this.applyControls();
         break;
       case "theme": {
         const p = paletteById(String(value));
-        (this.lineMat.uniforms.uColorA.value as THREE.Color).set(p.a);
-        (this.lineMat.uniforms.uColorB.value as THREE.Color).set(p.b);
-        (this.lineMat.uniforms.uColorC.value as THREE.Color).set(p.c);
+        for (const m of [this.lineMat, this.capMat]) {
+          (m.uniforms.uColorA.value as THREE.Color).set(p.a);
+          (m.uniforms.uColorB.value as THREE.Color).set(p.b);
+          (m.uniforms.uColorC.value as THREE.Color).set(p.c);
+        }
         break;
       }
     }
@@ -452,7 +584,10 @@ export class Drift implements Scene {
     this.springQuad?.geometry.dispose();
     this.lineMat?.dispose();
     this.lineMesh?.geometry.dispose();
+    this.capMat?.dispose();
+    this.capMesh?.geometry.dispose();
     this.debugMat?.dispose();
     if (this.lineMesh) this.scene.remove(this.lineMesh);
+    if (this.capMesh) this.scene.remove(this.capMesh);
   }
 }

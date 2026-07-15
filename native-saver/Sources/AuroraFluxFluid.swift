@@ -58,6 +58,7 @@ final class AuroraFluxFluid {
     private var pNoise, pAdvect, pAdjust, pDiffuse, pInject, pDivergence, pPressure, pSubtract: MTLRenderPipelineState!
     private var pSpring: MTLRenderPipelineState!
     private var pLine: MTLRenderPipelineState!
+    private var pCap: MTLRenderPipelineState!
 
     private var lineParams = LineParams()
     private var simTime: Float = 0
@@ -106,6 +107,16 @@ final class AuroraFluxFluid {
             ld.colorAttachments[0].sourceRGBBlendFactor = .one
             ld.colorAttachments[0].destinationRGBBlendFactor = .one
             pLine = try device.makeRenderPipelineState(descriptor: ld)
+            // Rounded endpoint caps (Flux endpoint pass) — same blend, own shaders.
+            let cd = MTLRenderPipelineDescriptor()
+            cd.vertexFunction = lib.makeFunction(name: "cap_vertex")
+            cd.fragmentFunction = lib.makeFunction(name: "cap_fragment")
+            cd.colorAttachments[0].pixelFormat = drawablePixelFormat
+            cd.colorAttachments[0].isBlendingEnabled = true
+            cd.colorAttachments[0].rgbBlendOperation = .add
+            cd.colorAttachments[0].sourceRGBBlendFactor = .one
+            cd.colorAttachments[0].destinationRGBBlendFactor = .one
+            pCap = try device.makeRenderPipelineState(descriptor: cd)
         } catch {
             NSLog("[Aurora] Flux fluid pipeline build failed: \(error)")
             return nil
@@ -200,6 +211,9 @@ final class AuroraFluxFluid {
         enc.setVertexTexture(stateA, index: 0)
         enc.setVertexTexture(velA, index: 1)
         let drawCount = max(1, Int(Float(AuroraFluxFluid.NUM_LINES) * (0.65 + 0.35 * u.density)))
+        enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: drawCount)
+        // Rounded endpoint caps on top of the lines (same encoder/blend/textures).
+        enc.setRenderPipelineState(pCap)
         enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: drawCount)
         enc.endEncoding()
     }
@@ -511,6 +525,47 @@ extension AuroraFluxFluid {
         float xo = abs(in.vtx.x);
         float edge = 1.0 - smoothstep(0.5 - fwidth(xo), 0.5, xo);
         float a = in.alpha * fade * edge;
+        if (a <= 0.0009) discard_fragment();
+        return float4(in.color * a * p.glow, 1.0);
+    }
+
+    // ---- Rounded endpoint caps (Flux endpoint.vert / endpoint.frag) -------------
+    struct CapVOut { float4 position [[position]]; float2 vtx; float2 dir; float3 color; float alpha; };
+    vertex CapVOut cap_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
+                              constant LineParams& p [[buffer(0)]],
+                              texture2d<float> uState [[texture(0)]],
+                              texture2d<float> uVelocity [[texture(1)]]) {
+        uint cell = (iid * 7001u) % p.numLines;
+        uint gx = cell % p.gx; uint gy = cell / p.gx;
+        float2 grid = float2(gx, gy);
+        float2 basepoint = (grid + 0.5) / p.gridSize;
+        float2 endpoint = uState.read(uint2(gx, gy)).xy;
+        float2 fluidVel = uVelocity.sample(linClamp, basepoint).xy * p.velGain;
+        float wb = clamp(2.5 * length(fluidVel), 0.0, 1.0);
+        float lineWidth = wb * wb * (3.0 - 2.0 * wb);
+        // Quad corner in [-1,1]^2: (-1,-1),(1,-1),(-1,1),(1,1).
+        float2 corner = float2(((vid & 1u) == 0u) ? -1.0 : 1.0, (vid < 2u) ? -1.0 : 1.0);
+        // Quad centred on the line's head, half-size = half the line width (Flux:
+        // 0.5 * uLineWidth * iLineWidth * vertex), same pre-aspect-divide convention.
+        float2 head = float2(p.aspect, 1.0) * p.zoom * (basepoint * 2.0 - 1.0) + endpoint;
+        float2 pt = head + 0.5 * p.lineWidth * lineWidth * corner;
+        pt.x /= p.aspect;
+        CapVOut o;
+        o.position = float4(pt, 0.0, 1.0);
+        o.vtx = corner;
+        o.dir = endpoint / (length(endpoint) + 1e-5);
+        float angle = atan2(fluidVel.y, fluidVel.x) / 6.28318 + 0.5;
+        o.color = palCyc(p, angle + 0.35 * (basepoint.x + basepoint.y) + 0.01 * p.time);
+        o.alpha = wb;
+        return o;
+    }
+    fragment float4 cap_fragment(CapVOut in [[stage_in]], constant LineParams& p [[buffer(0)]]) {
+        float d = length(in.vtx);
+        float edge = 1.0 - smoothstep(1.0 - fwidth(d), 1.0, d);   // AA disc
+        // Keep only the half beyond the line's end; the line itself covers the rest.
+        float along = dot(in.vtx, in.dir);
+        float side = smoothstep(-fwidth(along), fwidth(along), along);
+        float a = in.alpha * edge * side;
         if (a <= 0.0009) discard_fragment();
         return float4(in.color * a * p.glow, 1.0);
     }

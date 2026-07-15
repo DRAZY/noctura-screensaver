@@ -201,6 +201,8 @@ struct FluxFluid {
     spring_ps: ID3D11PixelShader,
     line_vs: ID3D11VertexShader,
     line_ps: ID3D11PixelShader,
+    cap_vs: ID3D11VertexShader,
+    cap_ps: ID3D11PixelShader,
     vel_a: Tex,
     vel_b: Tex,
     noise_t: Tex,
@@ -288,7 +290,9 @@ impl FluxFluid {
                 let subtract_ps = make_ps(s!("subtract_frag"), ps_target, "subtract_frag")?;
                 let spring_ps = make_ps(s!("spring_frag"), ps_target, "spring_frag")?;
                 let line_ps = make_ps(s!("line_fragment"), ps_target, "line_fragment")?;
-                crate::log::line("flux: all 12 shaders compiled ok");
+                let cap_vs = make_vs(s!("cap_vertex"), vs_target, "cap_vertex")?;
+                let cap_ps = make_ps(s!("cap_fragment"), ps_target, "cap_fragment")?;
+                crate::log::line("flux: all 14 shaders compiled ok");
 
                 let mktex = |w, h, fmt, label: &str| Tex::make(device, w, h, fmt)
                     .map_err(|e| { crate::log::line(&format!("flux: texture '{label}' create failed")); e });
@@ -368,6 +372,8 @@ impl FluxFluid {
                     spring_ps,
                     line_vs,
                     line_ps,
+                    cap_vs,
+                    cap_ps,
                     vel_a,
                     vel_b,
                     noise_t,
@@ -643,6 +649,10 @@ impl FluxFluid {
         let draw_count = ((NUM_LINES as f32) * (0.65 + 0.35 * u.density))
             .floor()
             .max(1.0) as u32;
+        ctx.DrawInstanced(4, draw_count, 0, 0);
+        // Rounded endpoint caps on top of the lines (same blend/textures/cbuffer).
+        ctx.VSSetShader(&self.cap_vs, None);
+        ctx.PSSetShader(&self.cap_ps, None);
         ctx.DrawInstanced(4, draw_count, 0, 0);
 
         ctx.OMSetBlendState(None, None, 0xffffffff);
