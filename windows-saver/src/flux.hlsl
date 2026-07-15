@@ -305,11 +305,13 @@ LineVOut line_vertex(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     float cy = (vid < 2u) ? 0.0 : 1.0;
     float2 xBasis = float2(-endpoint.y, endpoint.x);
     xBasis /= (length(xBasis) + 1e-4);
-    float2 point = float2(aspect, 1.0) * zoom * (basepoint * 2.0 - 1.0) + endpoint * cy + lineWidth * lineWidthWeight * xBasis * cx;
-    point.x /= aspect;
+    // NOTE: `point` is a RESERVED KEYWORD in HLSL (GS primitive modifier) — FXC
+    // rejects it as an identifier even though MSL/GLSL allow it. Named `pt` here.
+    float2 pt = float2(aspect, 1.0) * zoom * (basepoint * 2.0 - 1.0) + endpoint * cy + lineWidth * lineWidthWeight * xBasis * cx;
+    pt.x /= aspect;
 
     LineVOut o;
-    o.position = float4(point, 0.0, 1.0);
+    o.position = float4(pt, 0.0, 1.0);
     o.vtx = float2(cx, cy);
     float shortBoost = 1.0 + (lineWidth * lineWidthWeight) / (length(endpoint) + 1e-4);
     o.beginOffset = beginOffset / shortBoost;

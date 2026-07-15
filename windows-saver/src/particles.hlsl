@@ -119,7 +119,8 @@ SwarmVOut swarm_vertex(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     flow += 0.5 * curlNoise(seed * scale * 2.3 + float3(t * 0.1, 5.0, 0.0));
     float3 pos = seed + flow * 0.6 + float3(0.0, sin(t * 0.2 + rnd * 6.28) * 0.1, 0.0);
     float4 mv = mul(modelView, float4(pos, 1.0));
-    float4 clip = mul(proj, mv);
+    // `clip` shadows the HLSL clip() intrinsic — renamed defensively for FXC.
+    float4 clipPos = mul(proj, mv);
     // gl_PointSize (device pixels) from the Metal reference. Convert to an NDC
     // half-extent: NDC spans 2.0 across `resolution` px, and pointPx is the full
     // sprite diameter, so half-extent = (pointPx / 2) * (2 / resPx) = pointPx / resPx.
@@ -130,8 +131,8 @@ SwarmVOut swarm_vertex(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     float2 sgn = uv * 2.0 - 1.0;
 
     SwarmVOut o;
-    clip.xy += sgn * ndcHalf * clip.w;  // offset before perspective divide
-    o.position = clip;
+    clipPos.xy += sgn * ndcHalf * clipPos.w;  // offset before perspective divide
+    o.position = clipPos;
     o.uv = uv;
     o.glow = 0.4 + 0.6 * rnd;
     o.color = lerp(colorA.rgb, colorB.rgb, clamp(length(flow) * 0.8, 0.0, 1.0));
