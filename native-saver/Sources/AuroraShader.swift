@@ -13,7 +13,10 @@ struct AuroraUniforms {
     var ticks: Float = 1          // polar-clock hour ticks 0/1
     var size: Float = 0.85        // element-size control (glyphs, fireflies, caustics)
     var resolution: SIMD2<Float> = .init(1, 1)
-    var pad1: SIMD2<Float> = .init(0, 0)
+    // pad1.x = drawable px per logical point (content scale; 2 = Retina default),
+    // pad1.y = palette index (0 = default → Flux "Original" velocity coloring).
+    // Only the fluid Flux Drift reads these; the fragment scenes ignore them.
+    var pad1: SIMD2<Float> = .init(2, 0)
     var colorA: SIMD4<Float> = .init(0.10, 0.07, 0.25, 1)
     var colorB: SIMD4<Float> = .init(0.78, 0.12, 0.54, 1)
     var colorC: SIMD4<Float> = .init(0.96, 0.65, 0.14, 1)

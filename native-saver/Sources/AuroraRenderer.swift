@@ -102,6 +102,14 @@ final class AuroraRenderer {
         uniforms.density = preferences.density
         uniforms.size = preferences.size
         uniforms.scene = Float(preferences.sceneIndex)
+        uniforms.pad1.y = Float(preferences.paletteIndex) // 0 = Flux "Original" coloring
+    }
+
+    /// Report the drawable px per logical point (window backing scale × adaptive
+    /// render scale). The fluid Flux Drift derives its screen-space line grid from
+    /// the LOGICAL size, so this must track the live drawable scale.
+    func setContentScale(_ scale: Float) {
+        uniforms.pad1.x = max(scale, 0.5)
     }
 
     /// Refresh the polar-clock time uniforms from the current local time. Cheap;

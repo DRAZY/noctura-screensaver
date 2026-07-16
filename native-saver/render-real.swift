@@ -57,8 +57,8 @@ struct RenderReal {
             prefs.sceneIndex = idx
             renderer.apply(preferences: prefs)
             renderer.setTimeForTest(0)
-            // Advance ~4 s of frames so each sim develops, through the REAL dispatch.
-            for f in 0..<240 {
+            // Advance ~10 s of frames so each sim develops, through the REAL dispatch.
+            for f in 0..<600 {
                 renderer.setTimeForTest(Float(f) * (1.0 / 60))
                 guard let cmd = queue.makeCommandBuffer() else { fail("cmd") }
                 renderer.encodeFrame(into: cmd, target: target)

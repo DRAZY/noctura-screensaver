@@ -315,6 +315,9 @@ final class AuroraView: ScreenSaverView {
         let fpy = Float(max(py, 1))
         metalLayer.drawableSize = CGSize(width: CGFloat(fpx), height: CGFloat(fpy))
         renderer?.setResolution(width: fpx, height: fpy)
+        // Effective drawable px per logical point — Flux Drift derives its
+        // screen-space line grid from the logical size via this.
+        renderer?.setContentScale(Float(max(px, 1) / max(bounds.width, 1)))
         updateClockOverlay(force: true) // reposition/refresh the clock on resize
     }
 
