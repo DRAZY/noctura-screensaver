@@ -71,24 +71,28 @@ float snoise(vec3 v){
 }
 `;
 
-// generate_noise.frag — 3 simplex channels summed → a divergence-carrying force field.
+// generate_noise.frag — 3 simplex channels summed → a divergence-carrying force
+// field. Faithful to Flux: each channel carries TWO offsets and a blend factor —
+// when an offset grows large (float precision would degrade the simplex lattice)
+// the channel crossfades to a fresh offset and swaps (NoiseChannel::tick).
 const NOISE_FRAG = /* glsl */ `
 precision highp float;
 in vec2 vUv;
 out vec4 fragColor;
-uniform vec2 uScale;      // per-channel scale (packed as 3 calls below)
-uniform vec3 uChScale;    // scale for ch0,ch1,ch2
-uniform vec3 uChMult;     // multiplier for ch0,ch1,ch2
-uniform vec3 uChOffset;   // offset for ch0,ch1,ch2 (time-driven)
+uniform vec2 uChScale[3];   // per-channel noise scale (breathes ±15% over time)
+uniform vec4 uChParams[3];  // (offset1, offset2, blendFactor, multiplier)
 ${SNOISE3}
 vec2 makePair(vec3 p){ return vec2(snoise(p), snoise(p + vec3(8.0, -8.0, 0.0))); }
-vec2 channel(float scale, float mult, float offset){
-  return mult * makePair(vec3(scale * vUv, offset));
+vec2 channel(vec2 scale, vec4 params){
+  vec2 pos = scale * vUv;
+  vec2 n = makePair(vec3(pos, params.x));
+  if (params.z > 0.0) n = mix(n, makePair(vec3(pos, params.y)), params.z);
+  return params.w * n;
 }
 void main(){
-  vec2 n = channel(uChScale.x, uChMult.x, uChOffset.x)
-         + channel(uChScale.y, uChMult.y, uChOffset.y)
-         + channel(uChScale.z, uChMult.z, uChOffset.z);
+  vec2 n = channel(uChScale[0], uChParams[0])
+         + channel(uChScale[1], uChParams[1])
+         + channel(uChScale[2], uChParams[2]);
   fragColor = vec4(n * 0.45, 0.0, 1.0);
 }
 `;
@@ -264,6 +268,43 @@ export const DEFAULT_FLUID: FluidSettings = {
   timestep: 1 / 60,
 };
 
+/**
+ * CPU-side state for one noise channel — exact port of Flux `NoiseChannel::tick`.
+ * The scale breathes ±15% on a slow sine, the offset scrolls by a fixed increment
+ * per fluid step, and past BLEND_THRESHOLD the channel crossfades to a second,
+ * smaller offset and swaps (keeps the simplex lattice in a float-precise range
+ * over an hours-long run).
+ */
+class NoiseChannel {
+  scale: number;
+  offset1 = 4.0 * Math.random();
+  offset2 = 0;
+  blendFactor = 0;
+
+  constructor(
+    readonly baseScale: number,
+    readonly multiplier: number,
+    readonly offsetIncrement: number,
+  ) {
+    this.scale = baseScale;
+  }
+
+  tick(elapsedTime: number): void {
+    const BLEND_THRESHOLD = 20.0;
+    this.scale = this.baseScale * (1.0 + 0.15 * Math.sin(0.01 * elapsedTime * Math.PI * 2));
+    this.offset1 += this.offsetIncrement;
+    if (this.offset1 > BLEND_THRESHOLD) {
+      this.blendFactor += this.offsetIncrement;
+      this.offset2 += this.offsetIncrement;
+    }
+    if (this.blendFactor > 1.0) {
+      this.offset1 = this.offset2;
+      this.offset2 = 0;
+      this.blendFactor = 0;
+    }
+  }
+}
+
 export class FluxFluid {
   readonly size: number;
   private velA: THREE.WebGLRenderTarget;
@@ -280,6 +321,14 @@ export class FluxFluid {
   private readonly quad: THREE.Mesh;
   private readonly mats: Record<string, THREE.RawShaderMaterial>;
 
+  // Noise channel state (wgpu Flux settings.rs defaults — the live-site values:
+  // scale, multiplier, offset increment).
+  private readonly channels = [
+    new NoiseChannel(2.8, 1.0, 0.001),
+    new NoiseChannel(15.0, 0.7, 0.001 * 6.0),
+    new NoiseChannel(30.0, 0.5, 0.001 * 12.0),
+  ];
+
   constructor(renderer: THREE.WebGLRenderer, size = 128) {
     this.size = size;
     // Float-texture LINEAR filtering needs OES_texture_float_linear; fall back to
@@ -293,7 +342,7 @@ export class FluxFluid {
     this.prsA = makeRT(size, THREE.NearestFilter);
     this.prsB = makeRT(size, THREE.NearestFilter);
     this.div = makeRT(size, THREE.NearestFilter);
-    this.noise = makeRT(size, linear);
+    this.noise = makeRT(2 * size, linear); // Flux: noise texture is 2× the fluid size
     this.fwd = makeRT(size, linear);
     this.rev = makeRT(size, linear);
 
@@ -308,10 +357,8 @@ export class FluxFluid {
 
     this.mats = {
       noise: mk(NOISE_FRAG, {
-        uChScale: { value: new THREE.Vector3(2.5, 15.0, 30.0) },
-        uChMult: { value: new THREE.Vector3(1.0, 0.7, 0.5) },
-        uChOffset: { value: new THREE.Vector3(0, 0, 0) },
-        uScale: { value: new THREE.Vector2(1, 1) },
+        uChScale: { value: [new THREE.Vector2(), new THREE.Vector2(), new THREE.Vector2()] },
+        uChParams: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
       }),
       advect: mk(ADVECT_FRAG, { velocityTexture: { value: null }, amount: { value: 0 }, dissipation: { value: 0 } }),
       adjust: mk(ADJUST_FRAG, { velocityTexture: { value: null }, forwardTexture: { value: null }, reverseTexture: { value: null }, deltaTime: { value: 0 } }),
@@ -343,16 +390,18 @@ export class FluxFluid {
     const dt = s.timestep;
     const m = this.mats;
 
-    // 1. Noise force field. Offsets scroll at Flux's FIXED per-frame increments
-    // (independent of amplitude) so the field evolves at the reference rate; only
-    // uChMult (amplitude) scales with noiseMultiplier.
-    (m.noise.uniforms.uChOffset.value as THREE.Vector3).set(
-      0.0015 * time * 60,
-      0.009 * time * 60,
-      0.018 * time * 60,
-    );
-    (m.noise.uniforms.uChMult.value as THREE.Vector3).set(1.0 * s.noiseMultiplier, 0.7 * s.noiseMultiplier, 0.5 * s.noiseMultiplier);
+    // 1. Noise force field. Channel offsets/scales come from NoiseChannel state
+    // ticked once per fluid step (Flux calls generate → tick inside the fixed-step
+    // loop). Only the multiplier (amplitude) scales with noiseMultiplier.
+    const scales = m.noise.uniforms.uChScale.value as THREE.Vector2[];
+    const params = m.noise.uniforms.uChParams.value as THREE.Vector4[];
+    for (let i = 0; i < 3; i++) {
+      const c = this.channels[i];
+      scales[i].set(c.scale, c.scale); // scaling_ratio 1 (screen-size ratio folded in by callers if ever >1)
+      params[i].set(c.offset1, c.offset2, c.blendFactor, c.multiplier * s.noiseMultiplier);
+    }
     this.blit(renderer, m.noise, this.noise);
+    for (const c of this.channels) c.tick(time);
 
     // 2. MacCormack advection: forward, reverse, adjust.
     m.advect.uniforms.velocityTexture.value = this.velA.texture;
@@ -390,7 +439,11 @@ export class FluxFluid {
     m.divergence.uniforms.velocityTexture.value = this.velA.texture;
     this.blit(renderer, m.divergence, this.div);
 
-    // 6. Pressure Jacobi (Retain: keep previous pressure as the initial guess).
+    // 6. Pressure Jacobi. wgpu Flux uses PressureMode::ClearWith(0.0): the field
+    // is zeroed before each solve rather than retained as the initial guess.
+    renderer.setRenderTarget(this.prsA);
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear();
     for (let i = 0; i < s.pressureIterations; i++) {
       m.pressure.uniforms.pressureTexture.value = this.prsA.texture;
       m.pressure.uniforms.divergenceTexture.value = this.div.texture;
