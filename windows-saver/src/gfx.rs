@@ -10,7 +10,9 @@
 use std::ffi::c_void;
 
 use windows::core::{s, w, Error, Interface, Result, PCSTR, PCWSTR};
-use windows::Win32::Foundation::{BOOL, HWND, TRUE};
+use windows::Win32::Foundation::{BOOL, HWND, RECT, TRUE};
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
 };
@@ -34,8 +36,9 @@ use windows::Win32::Graphics::Direct3D::{
 };
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32_FLOAT,
-    DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_MODE_DESC, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_FLOAT,
+    DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_MODE_DESC,
+    DXGI_RATIONAL, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory, IDXGIFactory6, IDXGISurface, IDXGISwapChain,
@@ -78,34 +81,73 @@ struct FluidParams {
     texel: [f32; 2],
     ch_scale: [f32; 4],
     ch_mult: [f32; 4],
-    ch_offset: [f32; 4],
+    ch_offset1: [f32; 4],
+    ch_offset2: [f32; 4],
+    ch_blend: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<FluidParams>() == 80);
+const _: () = assert!(std::mem::size_of::<FluidParams>() == 112);
 
+/// Float4-packed to mirror the HLSL cbuffer exactly (no register-packing traps).
+/// grid_a = (cols, rows, baseSpacing.xy); grid_b = (noiseScale.xy, noiseOffset1,
+/// aspect); line_a = (zoom, lineLength, lineWidth, beginOffset); line_b =
+/// (lineVariance, deltaTime, glow, colorMode).
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct LineParams {
-    grid_size: [f32; 2],
-    aspect: f32,
-    zoom: f32,
-    line_length: f32,
-    line_variance: f32,
-    vel_gain: f32,
-    delta_time: f32,
-    line_width: f32,
-    begin_offset: f32,
-    glow: f32,
-    time: f32,
-    num_lines: u32,
-    gx: u32,
-    pad: [f32; 2],
-    color_a: [f32; 4],
-    color_b: [f32; 4],
-    color_c: [f32; 4],
+    grid_a: [f32; 4],
+    grid_b: [f32; 4],
+    line_a: [f32; 4],
+    line_b: [f32; 4],
+    wheel: [[f32; 4]; 6],
 }
 
-const _: () = assert!(std::mem::size_of::<LineParams>() == 112);
+const _: () = assert!(std::mem::size_of::<LineParams>() == 160);
+
+/// Exact port of Flux `NoiseChannel::tick` — breathing scale + offset crossfade.
+struct NoiseChannel {
+    base_scale: f32,
+    multiplier: f32,
+    offset_increment: f32,
+    scale: f32,
+    offset1: f32,
+    offset2: f32,
+    blend_factor: f32,
+}
+
+impl NoiseChannel {
+    fn new(base_scale: f32, multiplier: f32, offset_increment: f32) -> Self {
+        // Cheap deterministic-enough random phase (std has no rng).
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let r = ((nanos.wrapping_mul(2654435761) >> 8) & 0xffff) as f32 / 65535.0;
+        NoiseChannel {
+            base_scale,
+            multiplier,
+            offset_increment,
+            scale: base_scale,
+            offset1: 4.0 * r,
+            offset2: 0.0,
+            blend_factor: 0.0,
+        }
+    }
+
+    fn tick(&mut self, elapsed: f32) {
+        self.scale = self.base_scale * (1.0 + 0.15 * (0.01 * elapsed * std::f32::consts::TAU).sin());
+        self.offset1 += self.offset_increment;
+        if self.offset1 > 20.0 {
+            self.blend_factor += self.offset_increment;
+            self.offset2 += self.offset_increment;
+        }
+        if self.blend_factor > 1.0 {
+            self.offset1 = self.offset2;
+            self.offset2 = 0.0;
+            self.blend_factor = 0.0;
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -129,26 +171,21 @@ const SHADER_SRC: &str = include_str!("shader.hlsl");
 const FLUX_SRC: &str = include_str!("flux.hlsl");
 const PARTICLES_SRC: &str = include_str!("particles.hlsl");
 
-const GX: u32 = 128;
-const GY: u32 = 72;
-const NUM_LINES: u32 = 9216;
+const GRID_SPACING: f32 = 15.0; // logical px between basepoints (Flux grid_spacing)
+const MAX_FRAME_TIME: f32 = 0.1; // Flux MAX_FRAME_TIME — clamp long stalls
+const ZOOM: f32 = 1.6; // Flux view_scale
 const FLUID: u32 = 128;
 const MAX_PARTICLES: u32 = 60000;
-const TIME_SCALE: f32 = 0.115;
-const VEL_GAIN: f32 = 10.0;
-const DISSIPATION: f32 = 2.0;
-const BASE_LINE_LENGTH: f32 = 0.6;
 const VISCOSITY: f32 = 5.0;
 const DIFFUSE_ITERS: usize = 3;
 const PRESSURE_ITERS: usize = 19;
 const STEP: f32 = 1.0 / 60.0;
 /// Total fluid warm-up steps so the first visible frame already has structure.
-const WARMUP_STEPS: u32 = 150;
-/// Warm-up steps run PER FRAME. The 150-step warm-up must be amortized across
-/// frames: doing it in one burst is ~150×29 ≈ 4350 D3D11 draws in a single frame,
-/// which freezes for seconds and can trip Windows' 2-second GPU TDR watchdog —
-/// resetting the device, which then falls back to the old per-pixel Flux Drift.
-/// At 8/frame it finishes in ~19 frames (~0.3 s) with no stall.
+const WARMUP_STEPS: u32 = 60;
+/// Warm-up steps run PER FRAME. The warm-up must be amortized across frames:
+/// a one-frame burst is thousands of D3D11 draws, which freezes for seconds and
+/// can trip Windows' 2-second GPU TDR watchdog — resetting the device, which
+/// then falls back to the old per-pixel Flux Drift.
 const WARMUP_PER_FRAME: u32 = 8;
 
 struct Tex {
@@ -189,6 +226,7 @@ impl Tex {
 }
 
 struct FluxFluid {
+    device: ID3D11Device,
     fs_vs: ID3D11VertexShader,
     noise_ps: ID3D11PixelShader,
     advect_ps: ID3D11PixelShader,
@@ -198,11 +236,12 @@ struct FluxFluid {
     divergence_ps: ID3D11PixelShader,
     pressure_ps: ID3D11PixelShader,
     subtract_ps: ID3D11PixelShader,
-    spring_ps: ID3D11PixelShader,
+    place_ps: ID3D11PixelShader,
     line_vs: ID3D11VertexShader,
     line_ps: ID3D11PixelShader,
-    cap_vs: ID3D11VertexShader,
-    cap_ps: ID3D11PixelShader,
+    endpoint_vs: ID3D11VertexShader,
+    endpoint_ps: ID3D11PixelShader,
+    encode_ps: ID3D11PixelShader,
     vel_a: Tex,
     vel_b: Tex,
     noise_t: Tex,
@@ -211,16 +250,31 @@ struct FluxFluid {
     prs_a: Tex,
     prs_b: Tex,
     div_t: Tex,
-    state_a: Tex,
-    state_b: Tex,
+    // Line state MRT ping-pong: [0]=(endpoint, springVel) [1]=(color, width)
+    // [2]=(colorVel, opacity). Rebuilt when the logical size / density changes.
+    state_a: Vec<Tex>,
+    state_b: Vec<Tex>,
+    // Linear accumulation target (rgba16f) + sRGB encode to the back buffer.
+    acc_t: Option<Tex>,
+    acc_size: (u32, u32),
+    cols: u32,
+    rows: u32,
     sampler: ID3D11SamplerState,
     add_blend: ID3D11BlendState,
     fluid_cb: ID3D11Buffer,
     line_cb: ID3D11Buffer,
-    sim_time: f32,
+    line: LineParams,
+    channels: [NoiseChannel; 3],
+    // Flux timing state (flux.rs::compute).
+    elapsed_time: f32,
+    fluid_frame_time: f32,
     last_time: f32,
-    warmup_left: u32,   // fluid warm-up steps still to run, amortized across frames
-    cleared: bool,      // whether the sim textures have been zero-cleared once
+    warmup_left: u32,
+    cleared: bool,
+    // Line-noise offset state (LineUniforms::tick, per frame).
+    line_noise_offset1: f32,
+    line_noise_offset2: f32,
+    line_noise_blend: f32,
 }
 
 impl FluxFluid {
@@ -279,6 +333,7 @@ impl FluxFluid {
 
                 let fs_vs = make_vs(s!("fs_vertex"), vs_target, "fs_vertex")?;
                 let line_vs = make_vs(s!("line_vertex"), vs_target, "line_vertex")?;
+                let endpoint_vs = make_vs(s!("endpoint_vertex"), vs_target, "endpoint_vertex")?;
                 let noise_ps = make_ps(s!("noise_frag"), ps_target, "noise_frag")?;
                 let advect_ps = make_ps(s!("advect_frag"), ps_target, "advect_frag")?;
                 let adjust_ps = make_ps(s!("adjust_frag"), ps_target, "adjust_frag")?;
@@ -287,25 +342,24 @@ impl FluxFluid {
                 let divergence_ps = make_ps(s!("divergence_frag"), ps_target, "divergence_frag")?;
                 let pressure_ps = make_ps(s!("pressure_frag"), ps_target, "pressure_frag")?;
                 let subtract_ps = make_ps(s!("subtract_frag"), ps_target, "subtract_frag")?;
-                let spring_ps = make_ps(s!("spring_frag"), ps_target, "spring_frag")?;
+                let place_ps = make_ps(s!("place_frag"), ps_target, "place_frag")?;
                 let line_ps = make_ps(s!("line_fragment"), ps_target, "line_fragment")?;
-                let cap_vs = make_vs(s!("cap_vertex"), vs_target, "cap_vertex")?;
-                let cap_ps = make_ps(s!("cap_fragment"), ps_target, "cap_fragment")?;
-                crate::log::line("flux: all 14 shaders compiled ok");
+                let endpoint_ps = make_ps(s!("endpoint_fragment"), ps_target, "endpoint_fragment")?;
+                let encode_ps = make_ps(s!("encode_frag"), ps_target, "encode_frag")?;
+                crate::log::line("flux: all 15 shaders compiled ok");
 
                 let mktex = |w, h, fmt, label: &str| Tex::make(device, w, h, fmt)
                     .map_err(|e| { crate::log::line(&format!("flux: texture '{label}' create failed")); e });
                 let vel_a = mktex(FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT, "vel_a")?;
                 let vel_b = mktex(FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT, "vel_b")?;
-                let noise_t = mktex(FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT, "noise_t")?;
+                // Noise texture is 2× the fluid size (Flux).
+                let noise_t = mktex(2 * FLUID, 2 * FLUID, DXGI_FORMAT_R32G32_FLOAT, "noise_t")?;
                 let fwd_t = mktex(FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT, "fwd_t")?;
                 let rev_t = mktex(FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT, "rev_t")?;
                 let prs_a = mktex(FLUID, FLUID, DXGI_FORMAT_R32_FLOAT, "prs_a")?;
                 let prs_b = mktex(FLUID, FLUID, DXGI_FORMAT_R32_FLOAT, "prs_b")?;
                 let div_t = mktex(FLUID, FLUID, DXGI_FORMAT_R32_FLOAT, "div_t")?;
-                let state_a = mktex(GX, GY, DXGI_FORMAT_R32G32B32A32_FLOAT, "state_a")?;
-                let state_b = mktex(GX, GY, DXGI_FORMAT_R32G32B32A32_FLOAT, "state_b")?;
-                crate::log::line("flux: all 10 textures created ok");
+                crate::log::line("flux: all fluid textures created ok");
 
                 let sampler_desc = D3D11_SAMPLER_DESC {
                     Filter: sampler_filter,
@@ -321,10 +375,11 @@ impl FluxFluid {
                 device.CreateSamplerState(&sampler_desc, Some(&mut sampler))?;
                 let sampler = sampler.ok_or_else(Error::from_win32)?;
 
+                // (SRC_ALPHA, ONE) — Flux's alpha-scaled additive blend.
                 let mut blend_desc = D3D11_BLEND_DESC::default();
                 blend_desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
                     BlendEnable: TRUE,
-                    SrcBlend: D3D11_BLEND_ONE,
+                    SrcBlend: D3D11_BLEND_SRC_ALPHA,
                     DestBlend: D3D11_BLEND_ONE,
                     BlendOp: D3D11_BLEND_OP_ADD,
                     SrcBlendAlpha: D3D11_BLEND_ONE,
@@ -359,6 +414,7 @@ impl FluxFluid {
                 let line_cb = line_cb.ok_or_else(Error::from_win32)?;
 
                 Ok(FluxFluid {
+                    device: device.clone(),
                     fs_vs,
                     noise_ps,
                     advect_ps,
@@ -368,11 +424,12 @@ impl FluxFluid {
                     divergence_ps,
                     pressure_ps,
                     subtract_ps,
-                    spring_ps,
+                    place_ps,
                     line_vs,
                     line_ps,
-                    cap_vs,
-                    cap_ps,
+                    endpoint_vs,
+                    endpoint_ps,
+                    encode_ps,
                     vel_a,
                     vel_b,
                     noise_t,
@@ -381,16 +438,36 @@ impl FluxFluid {
                     prs_a,
                     prs_b,
                     div_t,
-                    state_a,
-                    state_b,
+                    state_a: Vec::new(),
+                    state_b: Vec::new(),
+                    acc_t: None,
+                    acc_size: (0, 0),
+                    cols: 0,
+                    rows: 0,
                     sampler,
                     add_blend,
                     fluid_cb,
                     line_cb,
-                    sim_time: 0.0,
+                    line: LineParams {
+                        grid_a: [1.0, 1.0, 1.0, 1.0],
+                        grid_b: [64.0, 64.0, 0.0, 1.0],
+                        line_a: [ZOOM, 0.0, 0.0, 0.4],
+                        line_b: [0.55, 1.0 / 60.0, 1.0, 0.0],
+                        wheel: [[1.0; 4]; 6],
+                    },
+                    channels: [
+                        NoiseChannel::new(2.8, 1.0, 0.001),
+                        NoiseChannel::new(15.0, 0.7, 0.006),
+                        NoiseChannel::new(30.0, 0.5, 0.012),
+                    ],
+                    elapsed_time: 0.0,
+                    fluid_frame_time: 0.0,
                     last_time: -1.0,
                     warmup_left: WARMUP_STEPS,
                     cleared: false,
+                    line_noise_offset1: 0.0,
+                    line_noise_offset2: 0.0,
+                    line_noise_blend: 0.0,
                 })
             })()
             .map(|f| {
@@ -452,10 +529,12 @@ impl FluxFluid {
         ctx: &ID3D11DeviceContext,
         ps: &ID3D11PixelShader,
         target: &Tex,
+        vw: u32,
+        vh: u32,
         inputs: &[Option<ID3D11ShaderResourceView>],
         p: &FluidParams,
     ) {
-        Self::set_viewport(ctx, FLUID, FLUID);
+        Self::set_viewport(ctx, vw, vh);
         ctx.OMSetRenderTargets(Some(&[Some(target.rtv.clone())]), None);
         self.upload_fluid(ctx, p);
         ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
@@ -467,7 +546,9 @@ impl FluxFluid {
         ctx.Draw(3, 0);
     }
 
-    unsafe fn fluid_step(&mut self, ctx: &ID3D11DeviceContext, dt: f32, noise_mult: f32) {
+    /// One fixed 1/60 fluid step (flux.rs compute loop body). Ticks noise channels.
+    unsafe fn fluid_step(&mut self, ctx: &ID3D11DeviceContext) {
+        let dt = STEP;
         let texel = [1.0 / FLUID as f32, 1.0 / FLUID as f32];
         let srv = |t: &Tex| Some(t.srv.clone());
 
@@ -477,76 +558,172 @@ impl FluxFluid {
             ..Default::default()
         };
 
-        p.ch_scale = [2.5, 15.0, 30.0, 0.0];
-        p.ch_mult = [1.0 * noise_mult, 0.7 * noise_mult, 0.5 * noise_mult, 0.0];
-        p.ch_offset = [
-            0.0015 * self.sim_time * 60.0,
-            0.009 * self.sim_time * 60.0,
-            0.018 * self.sim_time * 60.0,
-            0.0,
-        ];
-        self.fluid_pass(ctx, &self.noise_ps, &self.noise_t, &[], &p);
+        // 1. Noise force field (channel state: breathing scale + offset crossfade).
+        p.ch_scale = [self.channels[0].scale, self.channels[1].scale, self.channels[2].scale, 0.0];
+        p.ch_mult = [self.channels[0].multiplier, self.channels[1].multiplier, self.channels[2].multiplier, 0.0];
+        p.ch_offset1 = [self.channels[0].offset1, self.channels[1].offset1, self.channels[2].offset1, 0.0];
+        p.ch_offset2 = [self.channels[0].offset2, self.channels[1].offset2, self.channels[2].offset2, 0.0];
+        p.ch_blend = [self.channels[0].blend_factor, self.channels[1].blend_factor, self.channels[2].blend_factor, 0.0];
+        self.fluid_pass(ctx, &self.noise_ps, &self.noise_t, 2 * FLUID, 2 * FLUID, &[], &p);
+        for c in &mut self.channels {
+            c.tick(self.elapsed_time);
+        }
 
-        p.dissipation = DISSIPATION;
+        // 2. MacCormack advection: forward, reverse, adjust. dissipation 0 (Flux).
+        p.dissipation = 0.0;
         p.amount = dt;
         let advect_inputs = [srv(&self.vel_a)];
-        self.fluid_pass(ctx, &self.advect_ps, &self.fwd_t, &advect_inputs, &p);
+        self.fluid_pass(ctx, &self.advect_ps, &self.fwd_t, FLUID, FLUID, &advect_inputs, &p);
 
         p.amount = -dt;
         let rev_inputs = [srv(&self.vel_a)];
-        self.fluid_pass(ctx, &self.advect_ps, &self.rev_t, &rev_inputs, &p);
+        self.fluid_pass(ctx, &self.advect_ps, &self.rev_t, FLUID, FLUID, &rev_inputs, &p);
 
         let adjust_inputs = [srv(&self.vel_a), srv(&self.fwd_t), srv(&self.rev_t)];
-        self.fluid_pass(ctx, &self.adjust_ps, &self.vel_b, &adjust_inputs, &p);
+        self.fluid_pass(ctx, &self.adjust_ps, &self.vel_b, FLUID, FLUID, &adjust_inputs, &p);
         std::mem::swap(&mut self.vel_a, &mut self.vel_b);
 
+        // 3. Diffuse (viscosity Jacobi).
         let center = 1.0 / (VISCOSITY * dt);
         p.alpha = center;
         p.r_beta = 1.0 / (4.0 + center);
         for _ in 0..DIFFUSE_ITERS {
             let diffuse_inputs = [srv(&self.vel_a)];
-            self.fluid_pass(ctx, &self.diffuse_ps, &self.vel_b, &diffuse_inputs, &p);
+            self.fluid_pass(ctx, &self.diffuse_ps, &self.vel_b, FLUID, FLUID, &diffuse_inputs, &p);
             std::mem::swap(&mut self.vel_a, &mut self.vel_b);
         }
 
+        // 4. Inject noise as a force.
         let inject_inputs = [srv(&self.vel_a), srv(&self.noise_t)];
-        self.fluid_pass(ctx, &self.inject_ps, &self.vel_b, &inject_inputs, &p);
+        self.fluid_pass(ctx, &self.inject_ps, &self.vel_b, FLUID, FLUID, &inject_inputs, &p);
         std::mem::swap(&mut self.vel_a, &mut self.vel_b);
 
+        // 5. Divergence.
         let divergence_inputs = [srv(&self.vel_a)];
-        self.fluid_pass(ctx, &self.divergence_ps, &self.div_t, &divergence_inputs, &p);
+        self.fluid_pass(ctx, &self.divergence_ps, &self.div_t, FLUID, FLUID, &divergence_inputs, &p);
 
+        // 6. Pressure Jacobi — wgpu Flux clears pressure to 0 each solve (ClearWith).
+        ctx.ClearRenderTargetView(&self.prs_a.rtv, &[0.0, 0.0, 0.0, 0.0]);
         p.alpha = -1.0;
         p.r_beta = 0.25;
         for _ in 0..PRESSURE_ITERS {
             let pressure_inputs = [srv(&self.prs_a), srv(&self.div_t)];
-            self.fluid_pass(ctx, &self.pressure_ps, &self.prs_b, &pressure_inputs, &p);
+            self.fluid_pass(ctx, &self.pressure_ps, &self.prs_b, FLUID, FLUID, &pressure_inputs, &p);
             std::mem::swap(&mut self.prs_a, &mut self.prs_b);
         }
 
+        // 7. Subtract pressure gradient → divergence-free velocity.
         let subtract_inputs = [srv(&self.vel_a), srv(&self.prs_a)];
-        self.fluid_pass(ctx, &self.subtract_ps, &self.vel_b, &subtract_inputs, &p);
+        self.fluid_pass(ctx, &self.subtract_ps, &self.vel_b, FLUID, FLUID, &subtract_inputs, &p);
         std::mem::swap(&mut self.vel_a, &mut self.vel_b);
     }
 
-    unsafe fn spring_step(&mut self, ctx: &ID3D11DeviceContext, line: &LineParams) {
-        Self::set_viewport(ctx, GX, GY);
-        ctx.OMSetRenderTargets(Some(&[Some(self.state_b.rtv.clone())]), None);
-        self.upload_line(ctx, line);
+    /// (Re)build the grid + state textures from the logical size and density.
+    unsafe fn rebuild_grid(&mut self, ctx: &ID3D11DeviceContext, logical_w: f32, logical_h: f32, density: f32) -> bool {
+        // clamp_logical_size: upscale tiny viewports to a working minimum.
+        let upscale = (800.0 / logical_w).max(800.0 / logical_h).max(1.0);
+        let lw = logical_w * upscale;
+        let lh = logical_h * upscale;
+        let spacing = GRID_SPACING / (0.5 + density); // density 0.5 → Flux's 15
+        let cols0 = ((lw / spacing) as u32).max(1);
+        let rows0 = (((lh / lw) * cols0 as f32) as u32).max(1);
+        let new_cols = cols0 + 1;
+        let new_rows = rows0 + 1;
+        if new_cols != self.cols || new_rows != self.rows {
+            self.cols = new_cols;
+            self.rows = new_rows;
+            self.state_a.clear();
+            self.state_b.clear();
+            for i in 0..3 {
+                let a = Tex::make(&self.device, new_cols, new_rows, DXGI_FORMAT_R32G32B32A32_FLOAT);
+                let b = Tex::make(&self.device, new_cols, new_rows, DXGI_FORMAT_R32G32B32A32_FLOAT);
+                match (a, b) {
+                    (Ok(a), Ok(b)) => {
+                        ctx.ClearRenderTargetView(&a.rtv, &[0.0; 4]);
+                        ctx.ClearRenderTargetView(&b.rtv, &[0.0; 4]);
+                        self.state_a.push(a);
+                        self.state_b.push(b);
+                    }
+                    _ => {
+                        crate::log::line(&format!("flux: state texture {i} create failed"));
+                        self.cols = 0;
+                        self.rows = 0;
+                        return false;
+                    }
+                }
+            }
+            crate::log::line(&format!("flux: grid {new_cols}x{new_rows} ({} lines)", new_cols * new_rows));
+        }
+        self.line.grid_a = [self.cols as f32, self.rows as f32, 1.0 / cols0 as f32, 1.0 / rows0 as f32];
+        self.line.grid_b[0] = 64.0 * (self.cols as f32 / 171.0).max(1.0);
+        self.line.grid_b[1] = 64.0 * (self.rows as f32 / 171.0).max(1.0);
+        self.line.grid_b[3] = lw / lh;
+        // Flux line_scale_factor stroke sizing (wgpu defaults: length 450, width 9).
+        let pf = lh / lw;
+        let lsf = 1.0 / ((1.0 - pf) * lw + pf * lh).min(2000.0);
+        self.line.line_a[1] = ZOOM * 450.0 * lsf; // scaled by Size in encode()
+        self.line.line_a[2] = ZOOM * 9.0 * lsf;
+        true
+    }
+
+    /// Flux drawer.rs LineUniforms::tick — line-variance noise scroll, per frame.
+    fn tick_line_noise(&mut self, dt: f32) {
+        if dt <= 0.0 {
+            return;
+        }
+        let perturb = 1.0 + 0.2 * (0.01 * self.elapsed_time * std::f32::consts::TAU).sin();
+        let offset = 0.0015 * perturb;
+        self.line_noise_offset1 += offset;
+        if self.line_noise_offset1 > 4.0 {
+            self.line_noise_offset2 += offset;
+            self.line_noise_blend += 0.0015;
+        }
+        if self.line_noise_blend > 1.0 {
+            self.line_noise_offset1 = self.line_noise_offset2;
+            self.line_noise_offset2 = 0.0;
+            self.line_noise_blend = 0.0;
+        }
+        self.line.grid_b[2] = self.line_noise_offset1;
+    }
+
+    /// place_lines: fullscreen MRT pass over the 3 state textures (raw frame dt).
+    unsafe fn place_step(&mut self, ctx: &ID3D11DeviceContext, dt: f32) {
+        if dt <= 0.0 || self.state_a.len() != 3 {
+            return;
+        }
+        self.line.line_b[1] = dt;
+        Self::set_viewport(ctx, self.cols, self.rows);
+        let rtvs = [
+            Some(self.state_b[0].rtv.clone()),
+            Some(self.state_b[1].rtv.clone()),
+            Some(self.state_b[2].rtv.clone()),
+        ];
+        ctx.OMSetRenderTargets(Some(&rtvs), None);
+        let line = self.line;
+        self.upload_line(ctx, &line);
         ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
         ctx.PSSetShaderResources(
             0,
-            Some(&[Some(self.vel_a.srv.clone()), Some(self.state_a.srv.clone())]),
+            Some(&[
+                Some(self.vel_a.srv.clone()),
+                Some(self.state_a[0].srv.clone()),
+                Some(self.state_a[1].srv.clone()),
+                Some(self.state_a[2].srv.clone()),
+            ]),
         );
         ctx.PSSetConstantBuffers(2, Some(&[Some(self.line_cb.clone())]));
         ctx.VSSetShader(&self.fs_vs, None);
-        ctx.PSSetShader(&self.spring_ps, None);
+        ctx.PSSetShader(&self.place_ps, None);
         ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx.Draw(3, 0);
+        // Unbind the MRT before the states become shader inputs next pass.
+        ctx.OMSetRenderTargets(None, None);
+        ctx.PSSetShaderResources(0, Some(&[None, None, None, None]));
         std::mem::swap(&mut self.state_a, &mut self.state_b);
     }
 
     unsafe fn encode(&mut self, ctx: &ID3D11DeviceContext, surf: &Surface, u: &Uniforms) {
+        // Raw frame delta scaled by the Speed control (0.3 = 1× real-time = Flux).
         let now = u.time;
         let real_delta = if self.last_time < 0.0 {
             1.0 / 60.0
@@ -554,30 +731,27 @@ impl FluxFluid {
             (now - self.last_time).clamp(0.0, 0.25)
         };
         self.last_time = now;
+        let dt = real_delta.min(MAX_FRAME_TIME) * (u.speed / 0.3);
 
-        let noise_mult = 0.75 + 0.30 * (u.size - 0.85) / 0.85;
-        let mut line = LineParams {
-            grid_size: [GX as f32, GY as f32],
-            aspect: u.resolution[0] / u.resolution[1].max(1.0),
-            zoom: 1.6,
-            line_length: BASE_LINE_LENGTH * (1.0 + 0.5 * (u.size - 0.85)),
-            line_variance: 0.45,
-            vel_gain: VEL_GAIN,
-            delta_time: STEP,
-            line_width: 0.011,
-            begin_offset: 0.4,
-            glow: 1.0 + u.intensity,
-            time: self.sim_time,
-            num_lines: NUM_LINES,
-            gx: GX,
-            pad: [0.0, 0.0],
-            color_a: u.color_a,
-            color_b: u.color_b,
-            color_c: u.color_c,
-        };
+        // Logical size from back-buffer px / content scale (pad1[0]; 1 = plain px).
+        let content_scale = if u.pad1[0] > 0.0 { u.pad1[0] } else { 1.0 };
+        let logical_w = (u.resolution[0] / content_scale).max(1.0);
+        let logical_h = (u.resolution[1] / content_scale).max(1.0);
+        if !self.rebuild_grid(ctx, logical_w, logical_h, u.density) {
+            return;
+        }
+
+        // Controls: Size → stroke scale; Intensity → brightness; Style → color mode
+        // (palette 0 = Flux "Original" velocity coloring, others = color wheel).
+        let size_f = 1.0 + 0.5 * (u.size - 0.85);
+        self.line.line_a[1] *= size_f;
+        self.line.line_a[2] *= size_f;
+        self.line.line_b[2] = 0.5 + 0.5 * u.intensity;
+        self.line.line_b[3] = if u.pad1[1] > 0.5 { 1.0 } else { 0.0 };
+        self.line.wheel = [u.color_a, u.color_b, u.color_c, u.color_a, u.color_b, u.color_c];
 
         // One-time: D3D11 textures are not guaranteed zero-initialized, and the sim
-        // assumes velocity/pressure/state start at zero (like a cleared WebGL RT).
+        // assumes velocity/pressure start at zero (like a cleared WebGL RT).
         if !self.cleared {
             self.cleared = true;
             for t in [
@@ -589,73 +763,93 @@ impl FluxFluid {
                 &self.prs_a,
                 &self.prs_b,
                 &self.div_t,
-                &self.state_a,
-                &self.state_b,
             ] {
                 ctx.ClearRenderTargetView(&t.rtv, &[0.0, 0.0, 0.0, 0.0]);
             }
         }
-        // Amortized warm-up: run a bounded number of fluid steps per frame (never a
-        // 150-step burst) so no single frame stalls / trips the GPU TDR watchdog.
+
+        if dt > 0.0 {
+            self.elapsed_time += dt;
+            if self.elapsed_time >= 1000.0 {
+                self.elapsed_time -= 1000.0; // MAX_ELAPSED_TIME wrap
+            }
+            self.fluid_frame_time += dt;
+        }
+
+        // Amortized warm-up: bounded steps per frame (a burst can trip the TDR).
         if self.warmup_left > 0 {
             let n = self.warmup_left.min(WARMUP_PER_FRAME);
             for _ in 0..n {
-                self.sim_time += STEP;
-                self.fluid_step(ctx, STEP, noise_mult);
+                self.fluid_step(ctx);
             }
-            // Advance the springs once per warm-up frame so the blades settle in
-            // alongside the developing fluid instead of popping in at the end.
-            line.time = self.sim_time;
-            self.spring_step(ctx, &line);
             self.warmup_left -= n;
         }
 
-        // ONE smooth sim step per rendered frame (mirrors web Drift.update()): dt is
-        // real time scaled by TIME_SCALE, so motion advances a little EVERY frame —
-        // 60 Hz-smooth like flux.sandydoo.me — instead of a fixed-1/60-sim-step
-        // accumulator that only fired every ~9th frame (≈7 Hz stepping) and burned
-        // GPU re-rendering identical frames in between.
-        let dt = real_delta.clamp(0.0, 0.05) * TIME_SCALE * (u.speed / 0.3);
-        if dt > 0.0 {
-            self.sim_time += dt;
-            if self.sim_time > 1000.0 {
-                self.sim_time -= 1000.0;
-            }
-            self.fluid_step(ctx, dt, noise_mult);
-            line.delta_time = dt;
-            self.spring_step(ctx, &line);
+        // Fluid: fixed 1/60 steps in real time (accumulator, NOT one per frame).
+        let mut steps = 0;
+        while self.fluid_frame_time >= STEP && steps < 6 {
+            self.fluid_step(ctx);
+            self.fluid_frame_time -= STEP;
+            steps += 1;
         }
-        line.time = self.sim_time;
+        if self.fluid_frame_time > STEP {
+            self.fluid_frame_time = STEP; // drop backlog after a stall
+        }
+
+        // Lines: place with the RAW frame delta (Flux line animation timing).
+        self.tick_line_noise(dt);
+        self.place_step(ctx, dt);
+
+        // Accumulate lines + endpoints in LINEAR rgba16f, then sRGB-encode out.
+        if self.acc_t.is_none() || self.acc_size != (surf.bb_w, surf.bb_h) {
+            self.acc_t = Tex::make(&self.device, surf.bb_w, surf.bb_h, DXGI_FORMAT_R16G16B16A16_FLOAT)
+                .map_err(|e| crate::log::line(&format!("flux: acc texture create failed: {e}")))
+                .ok();
+            self.acc_size = (surf.bb_w, surf.bb_h);
+        }
+        let Some(acc) = self.acc_t.as_ref() else { return };
+        if self.state_a.len() != 3 {
+            return;
+        }
 
         Self::set_viewport(ctx, surf.bb_w, surf.bb_h);
-        ctx.OMSetRenderTargets(Some(&[Some(surf.rtv.clone())]), None);
-        ctx.ClearRenderTargetView(&surf.rtv, &[0.02, 0.016, 0.047, 1.0]);
+        ctx.OMSetRenderTargets(Some(&[Some(acc.rtv.clone())]), None);
+        ctx.ClearRenderTargetView(&acc.rtv, &[0.0, 0.0, 0.0, 1.0]); // Flux: pure black
         ctx.OMSetBlendState(Some(&self.add_blend), None, 0xffffffff);
+        let line = self.line;
         self.upload_line(ctx, &line);
         ctx.VSSetShaderResources(
             0,
-            Some(&[Some(self.state_a.srv.clone()), Some(self.vel_a.srv.clone())]),
+            Some(&[
+                Some(self.state_a[0].srv.clone()),
+                Some(self.state_a[1].srv.clone()),
+                Some(self.state_a[2].srv.clone()),
+            ]),
         );
-        ctx.VSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
         let line_cbs = [Some(self.line_cb.clone())];
         ctx.VSSetConstantBuffers(2, Some(&line_cbs));
         ctx.PSSetConstantBuffers(2, Some(&line_cbs));
         ctx.VSSetShader(&self.line_vs, None);
         ctx.PSSetShader(&self.line_ps, None);
         ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-        let draw_count = ((NUM_LINES as f32) * (0.65 + 0.35 * u.density))
-            .floor()
-            .max(1.0) as u32;
-        ctx.DrawInstanced(4, draw_count, 0, 0);
-        // Rounded endpoint caps on top of the lines (same blend/textures/cbuffer).
-        ctx.VSSetShader(&self.cap_vs, None);
-        ctx.PSSetShader(&self.cap_ps, None);
-        ctx.DrawInstanced(4, draw_count, 0, 0);
-
+        let count = self.cols * self.rows;
+        ctx.DrawInstanced(4, count, 0, 0);
+        // Endpoints on top of the lines (same blend/textures/cbuffer).
+        ctx.VSSetShader(&self.endpoint_vs, None);
+        ctx.PSSetShader(&self.endpoint_ps, None);
+        ctx.DrawInstanced(4, count, 0, 0);
         ctx.OMSetBlendState(None, None, 0xffffffff);
+        ctx.VSSetShaderResources(0, Some(&[None, None, None]));
+
+        // Final pass: linear → sRGB encode into the back buffer.
+        ctx.OMSetRenderTargets(Some(&[Some(surf.rtv.clone())]), None);
+        ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
+        ctx.PSSetShaderResources(0, Some(&[Some(acc.srv.clone())]));
+        ctx.VSSetShader(&self.fs_vs, None);
+        ctx.PSSetShader(&self.encode_ps, None);
         ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        ctx.VSSetShaderResources(0, Some(&[None, None]));
-        ctx.PSSetShaderResources(0, Some(&[None, None, None]));
+        ctx.Draw(3, 0);
+        ctx.PSSetShaderResources(0, Some(&[None]));
     }
 }
 
@@ -893,6 +1087,10 @@ pub struct Surface {
     d2d_rt: Option<ID2D1RenderTarget>,
     pub bb_w: u32,
     pub bb_h: u32,
+    /// Back-buffer px per LOGICAL point (window px ÷ DPI scale, then folded with
+    /// any back-buffer downscale). The fluid Flux Drift derives its screen-space
+    /// line grid from the logical size via this.
+    pub content_scale: f32,
 }
 
 /// `D3DCOMPILE_SKIP_OPTIMIZATION` — skip the optimizer for a much faster compile.
@@ -1215,12 +1413,23 @@ impl Gfx {
                 self.d2d.CreateDxgiSurfaceRenderTarget(&surf, &props).ok()
             });
 
+            // Back-buffer px per logical point: window px ÷ DPI scale gives logical
+            // points; the (possibly downscaled) back buffer maps onto those points.
+            let dpi = GetDpiForWindow(hwnd);
+            let dpi_scale = if dpi > 0 { dpi as f32 / 96.0 } else { 1.0 };
+            let mut rc = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rc);
+            let win_w = ((rc.right - rc.left).max(1)) as f32;
+            let logical_w = win_w / dpi_scale;
+            let content_scale = (bb_w as f32 / logical_w).max(0.1);
+
             Ok(Surface {
                 swapchain,
                 rtv: rtv.ok_or_else(Error::from_win32)?,
                 d2d_rt,
                 bb_w,
                 bb_h,
+                content_scale,
             })
         }
     }

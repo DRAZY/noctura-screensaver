@@ -1,11 +1,15 @@
-// 1:1 port of AuroraFluxFluid.swift's Metal MSL, compiled at runtime via D3DCompile.
+// Faithful sandydoo/Flux port — 1:1 with AuroraFluxFluid.swift's MSL and the web
+// Drift.ts (verified against flux.sandydoo.me). Compiled at runtime via D3DCompile.
 // Entry points: fs_vertex, noise_frag, advect_frag, adjust_frag, diffuse_frag,
-// inject_frag, divergence_frag, pressure_frag, subtract_frag, spring_frag,
-// line_vertex, line_fragment.
+// inject_frag, divergence_frag, pressure_frag, subtract_frag, place_frag,
+// line_vertex, line_fragment, endpoint_vertex, endpoint_fragment, encode_frag.
+//
+// RESERVED-WORD NOTE: `point`, `line`, `linear`, `sample`, `pass`, `half`,
+// `matrix`, `vector`, `texture`, `sampler`, `clip` are HLSL keywords/intrinsics
+// that MSL/GLSL allow as identifiers — FXC rejects them (this silently broke the
+// scene once). None are used as identifiers below; keep it that way.
 
 SamplerState samplerLinearClamp : register(s0);
-
-static const float2 FLUID_SIZE = float2(128.0, 128.0);
 
 cbuffer FluidParams : register(b1)
 {
@@ -14,38 +18,30 @@ cbuffer FluidParams : register(b1)
     float alpha;
     float rBeta;
     float deltaTime;
-    float pad0;
+    float fluidPad0;
     float2 texel;
-    float4 chScale;
-    float4 chMult;
-    float4 chOffset;
+    float4 chScale;    // per-channel noise scale (breathes)
+    float4 chMult;     // per-channel multiplier
+    float4 chOffset1;  // per-channel offset 1
+    float4 chOffset2;  // per-channel offset 2
+    float4 chBlend;    // per-channel crossfade factor
 };
 
+// Float4-packed to sidestep HLSL cbuffer register packing pitfalls; the Rust
+// mirror is [[f32; 4]; 4] + [[f32; 4]; 6].
 cbuffer LineParams : register(b2)
 {
-    float2 gridSize;
-    float aspect;
-    float zoom;
-    float lineLength;
-    float lineVariance;
-    float velGain;
-    float lineDeltaTime;  // renamed from MSL `deltaTime`: HLSL cbuffer members are
-                          // global-scope, so it cannot collide with FluidParams.deltaTime.
-                          // Same 32-bit slot/offset, so the Rust repr(C) layout is unchanged.
-    float lineWidth;
-    float beginOffset;
-    float glow;
-    float time;
-    uint numLines;
-    uint gx;
-    float4 colorA;
-    float4 colorB;
-    float4 colorC;
+    float4 gridA;   // cols, rows, baseSpacing.x, baseSpacing.y
+    float4 gridB;   // lineNoiseScale.x, lineNoiseScale.y, noiseOffset1, aspect
+    float4 lineA;   // zoom, lineLength, lineWidth, beginOffset
+    float4 lineB;   // lineVariance, deltaTime(line), glow, colorMode (0/1 as float)
+    float4 wheel[6];
 };
 
-Texture2D<float4> gTexA : register(t0);
-Texture2D<float4> gTexB : register(t1);
-Texture2D<float4> gTexC : register(t2);
+Texture2D<float4> gTex0 : register(t0);
+Texture2D<float4> gTex1 : register(t1);
+Texture2D<float4> gTex2 : register(t2);
+Texture2D<float4> gTex3 : register(t3);
 
 struct FSOut
 {
@@ -53,36 +49,22 @@ struct FSOut
     float2 uv : TEXCOORD0;
 };
 
-struct LineVOut
+FSOut fs_vertex(uint vid : SV_VertexID)
 {
-    float4 position : SV_Position;
-    float2 vtx : TEXCOORD0;
-    float3 color : TEXCOORD1;
-    float alpha : TEXCOORD2;
-    float beginOffset : TEXCOORD3;
-};
-
-float3 mod289(float3 x)
-{
-    return x - floor(x * (1.0 / 289.0)) * 289.0;
+    float2 v[3] = { float2(-1.0, -1.0), float2(3.0, -1.0), float2(-1.0, 3.0) };
+    FSOut o;
+    float2 p = v[vid];
+    o.position = float4(p, 0.0, 1.0);
+    o.uv = p * 0.5 + 0.5;
+    return o;
 }
 
-float4 mod289(float4 x)
-{
-    return x - floor(x * (1.0 / 289.0)) * 289.0;
-}
-
-float4 permute(float4 x)
-{
-    return mod289(((x * 34.0) + 1.0) * x);
-}
-
-float4 taylorInvSqrt(float4 r)
-{
-    return 1.79284291400159 - 0.85373472095314 * r;
-}
-
-float snoise3(float3 v)
+// ---- 3D simplex noise (Ashima, same as Flux) ----------------------------------
+float3 mod289(float3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+float4 mod289(float4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+float4 permute(float4 x) { return mod289(((x * 34.0) + 1.0) * x); }
+float4 taylorInvSqrt(float4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+float snoise(float3 v)
 {
     const float2 C = float2(1.0 / 6.0, 1.0 / 3.0);
     float3 i = floor(v + dot(v, C.yyy));
@@ -95,11 +77,9 @@ float snoise3(float3 v)
     float3 x2 = x0 - i2 + C.yyy;
     float3 x3 = x0 - 0.5;
     i = mod289(i);
-    float4 p = permute(
-        permute(
-            permute(i.z + float4(0.0, i1.z, i2.z, 1.0)) +
-            i.y + float4(0.0, i1.y, i2.y, 1.0)) +
-        i.x + float4(0.0, i1.x, i2.x, 1.0));
+    float4 p = permute(permute(permute(i.z + float4(0.0, i1.z, i2.z, 1.0))
+                                     + i.y + float4(0.0, i1.y, i2.y, 1.0))
+                                     + i.x + float4(0.0, i1.x, i2.x, 1.0));
     float4 j = p - 49.0 * floor(p * (1.0 / 49.0));
     float4 x_ = floor(j * (1.0 / 7.0));
     float4 y_ = floor(j - 7.0 * x_);
@@ -118,10 +98,7 @@ float snoise3(float3 v)
     float3 g2 = float3(a1.xy, h.z);
     float3 g3 = float3(a1.zw, h.w);
     float4 norm = taylorInvSqrt(float4(dot(g0, g0), dot(g1, g1), dot(g2, g2), dot(g3, g3)));
-    g0 *= norm.x;
-    g1 *= norm.y;
-    g2 *= norm.z;
-    g3 *= norm.w;
+    g0 *= norm.x; g1 *= norm.y; g2 *= norm.z; g3 *= norm.w;
     float4 m = max(0.6 - float4(dot(x0, x0), dot(x1, x1), dot(x2, x2), dot(x3, x3)), 0.0);
     m = m * m;
     m = m * m;
@@ -129,261 +106,307 @@ float snoise3(float3 v)
     return 42.0 * dot(m, px);
 }
 
-float2 makePair(float3 p)
+// ---- Fluid passes (identical math to the web FluxFluid.ts) ---------------------
+float2 makePair(float3 p) { return float2(snoise(p), snoise(p + float3(8.0, -8.0, 0.0))); }
+float2 noiseChannel(float2 uv, float scaleVal, float mult, float off1, float off2, float blendF)
 {
-    return float2(snoise3(p), snoise3(p + float3(8.0, -8.0, 0.0)));
-}
-
-float hashf(float2 pp)
-{
-    pp = frac(pp * float2(123.34, 456.21));
-    pp += dot(pp, pp + 45.32);
-    return frac(pp.x * pp.y);
-}
-
-float3 palCyc(float x)
-{
-    float f = frac(x);
-    if (f < 0.3333)
+    float2 pos = scaleVal * uv;
+    float2 n = makePair(float3(pos, off1));
+    if (blendF > 0.0)
     {
-        return lerp(colorA.rgb, colorB.rgb, f / 0.3333);
+        n = lerp(n, makePair(float3(pos, off2)), blendF);
     }
-    if (f < 0.6666)
-    {
-        return lerp(colorB.rgb, colorC.rgb, (f - 0.3333) / 0.3333);
-    }
-    return lerp(colorC.rgb, colorA.rgb, (f - 0.6666) / 0.3334);
+    return mult * n;
 }
 
-FSOut fs_vertex(uint vid : SV_VertexID)
+float4 noise_frag(FSOut fsIn) : SV_Target
 {
-    float2 v[3] = {
-        float2(-1.0, -1.0),
-        float2(3.0, -1.0),
-        float2(-1.0, 3.0)
-    };
-
-    FSOut o;
-    float2 p = v[vid];
-    o.position = float4(p, 0.0, 1.0);
-    o.uv = p * 0.5 + 0.5;
-    return o;
-}
-
-float4 noise_frag(FSOut input) : SV_Target
-{
-    float2 uv = input.uv;
-    float2 n =
-        chMult.x * makePair(float3(chScale.x * uv, chOffset.x)) +
-        chMult.y * makePair(float3(chScale.y * uv, chOffset.y)) +
-        chMult.z * makePair(float3(chScale.z * uv, chOffset.z));
+    float2 n = noiseChannel(fsIn.uv, chScale.x, chMult.x, chOffset1.x, chOffset2.x, chBlend.x)
+             + noiseChannel(fsIn.uv, chScale.y, chMult.y, chOffset1.y, chOffset2.y, chBlend.y)
+             + noiseChannel(fsIn.uv, chScale.z, chMult.z, chOffset1.z, chOffset2.z, chBlend.z);
     return float4(n * 0.45, 0.0, 1.0);
 }
 
-float4 advect_frag(FSOut input) : SV_Target
+float4 advect_frag(FSOut fsIn) : SV_Target
 {
-    float2 tp = floor(FLUID_SIZE * input.uv);
-    float2 v = gTexA.Load(int3(int(tp.x), int(tp.y), 0)).xy;
-    float2 adv = ((tp + 0.5) - amount * v) / FLUID_SIZE;
+    float w, h;
+    gTex0.GetDimensions(w, h);
+    float2 size = float2(w, h);
+    float2 texelPos = floor(size * fsIn.uv);
+    float2 velocity = gTex0.Load(int3(int(texelPos.x), int(texelPos.y), 0)).xy;
+    float2 advectedPos = ((texelPos + 0.5) - amount * velocity) / size;
     float decay = 1.0 + dissipation * amount;
-    return float4(gTexA.Sample(samplerLinearClamp, adv).xy / decay, 0.0, 1.0);
+    return float4(gTex0.SampleLevel(samplerLinearClamp, advectedPos, 0.0).xy / decay, 0.0, 1.0);
 }
 
-float4 adjust_frag(FSOut input) : SV_Target
+float4 adjust_frag(FSOut fsIn) : SV_Target
 {
-    uint2 pos = uint2(floor(input.uv * FLUID_SIZE));
-    float2 v = gTexA.Load(int3(int(pos.x), int(pos.y), 0)).xy;
-    float2 sp = (0.5 + floor((float2(pos) + 1.0) - deltaTime * v)) / FLUID_SIZE;
-    float2 t = texel;
-    float2 L = gTexA.Sample(samplerLinearClamp, sp + float2(-t.x, 0.0)).xy;
-    float2 R = gTexA.Sample(samplerLinearClamp, sp + float2(t.x, 0.0)).xy;
-    float2 T = gTexA.Sample(samplerLinearClamp, sp + float2(0.0, t.y)).xy;
-    float2 B = gTexA.Sample(samplerLinearClamp, sp + float2(0.0, -t.y)).xy;
+    float w, h;
+    gTex0.GetDimensions(w, h);
+    float2 size = float2(w, h);
+    int2 pos = int2(floor(fsIn.uv * size));
+    float2 velocity = gTex0.Load(int3(pos, 0)).xy;
+    float2 sp = (0.5 + floor((float2(pos) + 1.0) - deltaTime * velocity)) / size;
+    float2 t = 1.0 / size;
+    float2 L = gTex0.SampleLevel(samplerLinearClamp, sp + float2(-t.x, 0.0), 0.0).xy;
+    float2 R = gTex0.SampleLevel(samplerLinearClamp, sp + float2(t.x, 0.0), 0.0).xy;
+    float2 T = gTex0.SampleLevel(samplerLinearClamp, sp + float2(0.0, t.y), 0.0).xy;
+    float2 B = gTex0.SampleLevel(samplerLinearClamp, sp + float2(0.0, -t.y), 0.0).xy;
     float2 lo = min(L, min(R, min(T, B)));
     float2 hi = max(L, max(R, max(T, B)));
-    float2 adjusted = gTexB.Load(int3(int(pos.x), int(pos.y), 0)).xy + 0.5 * (v - gTexC.Load(int3(int(pos.x), int(pos.y), 0)).xy);
+    float2 fwdV = gTex1.Load(int3(pos, 0)).xy;
+    float2 revV = gTex2.Load(int3(pos, 0)).xy;
+    float2 adjusted = fwdV + 0.5 * (velocity - revV);
     return float4(clamp(adjusted, lo, hi), 0.0, 1.0);
 }
 
-float4 diffuse_frag(FSOut input) : SV_Target
+float4 diffuse_frag(FSOut fsIn) : SV_Target
 {
-    float2 uv = input.uv;
+    float w, h;
+    gTex0.GetDimensions(w, h);
+    float2 size = float2(w, h);
+    float2 velocity = gTex0.Load(int3(int2(floor(size * fsIn.uv)), 0)).xy;
     float2 t = texel;
-    float2 c = gTexA.Load(int3(int(floor(FLUID_SIZE.x * uv.x)), int(floor(FLUID_SIZE.y * uv.y)), 0)).xy;
-    float2 L = gTexA.Sample(samplerLinearClamp, uv + float2(-t.x, 0.0)).xy;
-    float2 R = gTexA.Sample(samplerLinearClamp, uv + float2(t.x, 0.0)).xy;
-    float2 T = gTexA.Sample(samplerLinearClamp, uv + float2(0.0, t.y)).xy;
-    float2 B = gTexA.Sample(samplerLinearClamp, uv + float2(0.0, -t.y)).xy;
-    return float4(rBeta * (L + R + B + T + alpha * c), 0.0, 1.0);
+    float2 L = gTex0.SampleLevel(samplerLinearClamp, fsIn.uv + float2(-t.x, 0.0), 0.0).xy;
+    float2 R = gTex0.SampleLevel(samplerLinearClamp, fsIn.uv + float2(t.x, 0.0), 0.0).xy;
+    float2 T = gTex0.SampleLevel(samplerLinearClamp, fsIn.uv + float2(0.0, t.y), 0.0).xy;
+    float2 B = gTex0.SampleLevel(samplerLinearClamp, fsIn.uv + float2(0.0, -t.y), 0.0).xy;
+    return float4(rBeta * (L + R + B + T + alpha * velocity), 0.0, 1.0);
 }
 
-float4 inject_frag(FSOut input) : SV_Target
+float4 inject_frag(FSOut fsIn) : SV_Target
 {
-    float2 v = gTexA.Sample(samplerLinearClamp, input.uv).xy;
-    float2 n = gTexB.Sample(samplerLinearClamp, input.uv).xy;
-    return float4(v + deltaTime * n, 0.0, 1.0);
+    float2 velocity = gTex0.SampleLevel(samplerLinearClamp, fsIn.uv, 0.0).xy;
+    float2 n = gTex1.SampleLevel(samplerLinearClamp, fsIn.uv, 0.0).xy;
+    return float4(velocity + deltaTime * n, 0.0, 1.0);
 }
 
-float4 divergence_frag(FSOut input) : SV_Target
+float4 divergence_frag(FSOut fsIn) : SV_Target
 {
-    float2 uv = input.uv;
     float2 t = texel;
-    float L = gTexA.Sample(samplerLinearClamp, uv + float2(-t.x, 0.0)).x;
-    float R = gTexA.Sample(samplerLinearClamp, uv + float2(t.x, 0.0)).x;
-    float T = gTexA.Sample(samplerLinearClamp, uv + float2(0.0, t.y)).y;
-    float B = gTexA.Sample(samplerLinearClamp, uv + float2(0.0, -t.y)).y;
+    float L = gTex0.SampleLevel(samplerLinearClamp, fsIn.uv + float2(-t.x, 0.0), 0.0).x;
+    float R = gTex0.SampleLevel(samplerLinearClamp, fsIn.uv + float2(t.x, 0.0), 0.0).x;
+    float T = gTex0.SampleLevel(samplerLinearClamp, fsIn.uv + float2(0.0, t.y), 0.0).y;
+    float B = gTex0.SampleLevel(samplerLinearClamp, fsIn.uv + float2(0.0, -t.y), 0.0).y;
     return float4(0.5 * ((R - L) + (T - B)), 0.0, 0.0, 1.0);
 }
 
-float4 pressure_frag(FSOut input) : SV_Target
+float4 pressure_frag(FSOut fsIn) : SV_Target
 {
-    float2 uv = input.uv;
+    float w, h;
+    gTex1.GetDimensions(w, h);
+    float2 size = float2(w, h);
+    float d = gTex1.Load(int3(int2(floor(size * fsIn.uv)), 0)).x;
     float2 t = texel;
-    float d = gTexB.Load(int3(int(floor(FLUID_SIZE.x * uv.x)), int(floor(FLUID_SIZE.y * uv.y)), 0)).x;
-    float L = gTexA.Sample(samplerLinearClamp, uv + float2(-t.x, 0.0)).x;
-    float R = gTexA.Sample(samplerLinearClamp, uv + float2(t.x, 0.0)).x;
-    float T = gTexA.Sample(samplerLinearClamp, uv + float2(0.0, t.y)).x;
-    float B = gTexA.Sample(samplerLinearClamp, uv + float2(0.0, -t.y)).x;
+    float L = gTex0.SampleLevel(samplerLinearClamp, fsIn.uv + float2(-t.x, 0.0), 0.0).x;
+    float R = gTex0.SampleLevel(samplerLinearClamp, fsIn.uv + float2(t.x, 0.0), 0.0).x;
+    float T = gTex0.SampleLevel(samplerLinearClamp, fsIn.uv + float2(0.0, t.y), 0.0).x;
+    float B = gTex0.SampleLevel(samplerLinearClamp, fsIn.uv + float2(0.0, -t.y), 0.0).x;
     return float4(rBeta * (L + R + B + T + alpha * d), 0.0, 0.0, 1.0);
 }
 
-float4 subtract_frag(FSOut input) : SV_Target
+float4 subtract_frag(FSOut fsIn) : SV_Target
 {
-    float2 uv = input.uv;
+    float w, h;
+    gTex0.GetDimensions(w, h);
+    float2 size = float2(w, h);
     float2 t = texel;
-    float L = gTexB.Sample(samplerLinearClamp, uv + float2(-t.x, 0.0)).x;
-    float R = gTexB.Sample(samplerLinearClamp, uv + float2(t.x, 0.0)).x;
-    float T = gTexB.Sample(samplerLinearClamp, uv + float2(0.0, t.y)).x;
-    float B = gTexB.Sample(samplerLinearClamp, uv + float2(0.0, -t.y)).x;
-    float2 v = gTexA.Load(int3(int(floor(FLUID_SIZE.x * uv.x)), int(floor(FLUID_SIZE.y * uv.y)), 0)).xy;
+    float L = gTex1.SampleLevel(samplerLinearClamp, fsIn.uv + float2(-t.x, 0.0), 0.0).x;
+    float R = gTex1.SampleLevel(samplerLinearClamp, fsIn.uv + float2(t.x, 0.0), 0.0).x;
+    float T = gTex1.SampleLevel(samplerLinearClamp, fsIn.uv + float2(0.0, t.y), 0.0).x;
+    float B = gTex1.SampleLevel(samplerLinearClamp, fsIn.uv + float2(0.0, -t.y), 0.0).x;
+    float2 v = gTex0.Load(int3(int2(floor(size * fsIn.uv)), 0)).xy;
     float2 boundary = float2(1.0, 1.0);
-    if (uv.x < t.x || uv.x > 1.0 - t.x)
-    {
-        boundary.x = 0.0;
-    }
-    if (uv.y < t.y || uv.y > 1.0 - t.y)
-    {
-        boundary.y = 0.0;
-    }
+    if (fsIn.uv.x < t.x || fsIn.uv.x > 1.0 - t.x) boundary.x = 0.0;
+    if (fsIn.uv.y < t.y || fsIn.uv.y > 1.0 - t.y) boundary.y = 0.0;
     return float4(boundary * (v - 0.5 * float2(R - L, T - B)), 0.0, 1.0);
 }
 
-float4 spring_frag(FSOut input) : SV_Target
+// ---- place_lines (Flux place_lines as an MRT pass over 3 state textures) -------
+// gTex0 = fluid velocity, gTex1..3 = previous state 0..2.
+// SV_Target0 endpoint+springVel, 1 color+width, 2 colorVel+opacity.
+struct PlaceOut
 {
-    uint2 tc = uint2(input.position.xy);
-    float2 grid = float2(tc);
-    float2 basepoint = (grid + 0.5) / gridSize;
-    float2 velocity = gTexA.Sample(samplerLinearClamp, basepoint).xy * velGain;
-    float4 st = gTexB.Load(int3(int(tc.x), int(tc.y), 0));
-    float2 endpoint = st.xy;
-    float2 springVel = st.zw;
-    float variance = lerp(1.0 - lineVariance, 1.0, hashf(grid));
-    float vdb = lerp(3.0, 25.0, 1.0 - variance);
-    float mb = lerp(3.0, 5.0, variance);
-    float2 newVel = (1.0 - lineDeltaTime * mb) * springVel + (lineLength * velocity - endpoint) * vdb * lineDeltaTime;
-    float2 newEndpoint = endpoint + lineDeltaTime * newVel;
-    float len = length(newEndpoint);
-    if (len > 0.6)
-    {
-        newEndpoint *= 0.6 / len;
-    }
-    return float4(newEndpoint, newVel);
+    float4 endVel : SV_Target0;
+    float4 colorWidth : SV_Target1;
+    float4 colorVel : SV_Target2;
+};
+
+float3 wheelColor(float angle)
+{
+    const float TAU = 6.283185307179586;
+    float slice = TAU / 6.0;
+    float wrapped = fmod(fmod(angle, TAU) + TAU, TAU);
+    float rawIndex = wrapped / slice;
+    float index = floor(rawIndex);
+    float nextIndex = fmod(index + 1.0, 6.0);
+    return lerp(wheel[int(index)].rgb, wheel[int(nextIndex)].rgb, frac(rawIndex));
 }
+
+PlaceOut place_frag(FSOut fsIn)
+{
+    int2 tc = int2(fsIn.position.xy);
+    float2 baseSpacing = gridA.zw;
+    float2 basepoint = float2(tc) * baseSpacing;
+    float2 velocity = gTex0.SampleLevel(samplerLinearClamp, basepoint, 0.0).xy;
+    float4 st = gTex1.Load(int3(tc, 0));
+    float4 cw = gTex2.Load(int3(tc, 0));
+    float4 cv = gTex3.Load(int3(tc, 0));
+
+    float lineVariance = lineB.x;
+    float dtLine = lineB.y;
+    float lineLength = lineA.y;
+
+    float n = snoise(float3(gridB.xy * basepoint, gridB.z));
+    float variance = lerp(1.0 - lineVariance, 1.0, 0.5 + 0.5 * n);
+    float velocityDeltaBoost = lerp(3.0, 25.0, 1.0 - variance);
+    float momentumBoost = lerp(3.0, 5.0, variance);
+
+    float2 newVel = (1.0 - dtLine * momentumBoost) * st.zw
+                  + (lineLength * velocity - st.xy) * velocityDeltaBoost * dtLine;
+    float2 newEndpoint = st.xy + dtLine * newVel;
+
+    float widthBoost = clamp(2.5 * length(velocity), 0.0, 1.0);
+    float widthV = widthBoost * widthBoost * (3.0 - widthBoost * 2.0);
+
+    float3 target;
+    if (lineB.w < 0.5)
+    {
+        // "Original": RGB straight from the velocity vector.
+        target = float3(clamp(float2(1.0, 0.66) * (0.5 + velocity), 0.0, 1.0), 0.5);
+    }
+    else
+    {
+        target = wheelColor(atan2(velocity.x, velocity.y));
+    }
+    float3 colorVel = cv.xyz * (1.0 - 3.0 * dtLine) + (target - cw.rgb) * 90.0 * dtLine;
+    float3 color = clamp(cw.rgb + dtLine * colorVel, 0.0, 1.0);
+
+    PlaceOut o;
+    o.endVel = float4(newEndpoint, newVel);
+    o.colorWidth = float4(color, widthV);
+    o.colorVel = float4(colorVel, widthV); // opacity = smoothstepped widthBoost (wgpu Flux)
+    return o;
+}
+
+// ---- Line rendering (Flux line shaders) -----------------------------------------
+// gTex0..2 = state textures.
+struct LineVOut
+{
+    float4 position : SV_Position;
+    float2 vtx : TEXCOORD0;
+    float4 color : TEXCOORD1;
+    float lineOffset : TEXCOORD2;
+};
 
 LineVOut line_vertex(uint vid : SV_VertexID, uint iid : SV_InstanceID)
 {
-    uint cell = (iid * 7001u) % numLines;
-    uint cellX = cell % gx;
-    uint cellY = cell / gx;
-    float2 grid = float2(cellX, cellY);
-    float2 basepoint = (grid + 0.5) / gridSize;
-    float2 endpoint = gTexA.Load(int3(int(cellX), int(cellY), 0)).xy;
-    float2 fluidVel = gTexB.SampleLevel(samplerLinearClamp, basepoint, 0.0).xy * velGain;
-    float wb = clamp(2.5 * length(fluidVel), 0.0, 1.0);
-    float lineWidthWeight = wb * wb * (3.0 - 2.0 * wb);
+    uint cols = (uint)gridA.x;
+    uint u = iid % cols;
+    uint v = iid / cols;
+    float2 basepoint = float2(u, v) * gridA.zw;
+    float2 endpoint = gTex0.Load(int3(int(u), int(v), 0)).xy;
+    float4 cw = gTex1.Load(int3(int(u), int(v), 0));
+    float opacity = gTex2.Load(int3(int(u), int(v), 0)).w;
+    float aspect = gridB.w;
+    float zoom = lineA.x;
+    float lineWidth = lineA.z;
+    float glow = lineB.z;
+
+    // Quad template: x in {-0.5, 0.5}, y in {0, 1}.
     float cx = ((vid & 1u) == 0u) ? -0.5 : 0.5;
     float cy = (vid < 2u) ? 0.0 : 1.0;
     float2 xBasis = float2(-endpoint.y, endpoint.x);
-    xBasis /= (length(xBasis) + 1e-4);
-    // NOTE: `point` is a RESERVED KEYWORD in HLSL (GS primitive modifier) — FXC
-    // rejects it as an identifier even though MSL/GLSL allow it. Named `pt` here.
-    float2 pt = float2(aspect, 1.0) * zoom * (basepoint * 2.0 - 1.0) + endpoint * cy + lineWidth * lineWidthWeight * xBasis * cx;
+    xBasis /= (length(xBasis) + 0.0001);
+    // NOTE: `point` is RESERVED in HLSL — named `pt`.
+    float2 pt = float2(aspect, 1.0) * zoom * (basepoint * 2.0 - 1.0)
+              + endpoint * cy
+              + lineWidth * cw.a * xBasis * cx;
     pt.x /= aspect;
 
     LineVOut o;
     o.position = float4(pt, 0.0, 1.0);
     o.vtx = float2(cx, cy);
-    float shortBoost = 1.0 + (lineWidth * lineWidthWeight) / (length(endpoint) + 1e-4);
-    o.beginOffset = beginOffset / shortBoost;
-    float angle = atan2(fluidVel.y, fluidVel.x) / 6.28318 + 0.5;
-    o.color = palCyc(angle + 0.35 * (basepoint.x + basepoint.y) + 0.01 * time);
-    o.alpha = wb;
+    o.color = float4(cw.rgb * glow, opacity);
+    float shortBoost = 1.0 + (lineWidth * cw.a) / (length(endpoint) + 1e-6);
+    o.lineOffset = lineA.w / shortBoost;
     return o;
 }
 
-float4 line_fragment(LineVOut input) : SV_Target
+float4 line_fragment(LineVOut fsIn) : SV_Target
 {
-    float fade = smoothstep(input.beginOffset, 1.0, input.vtx.y);
-    float xo = abs(input.vtx.x);
+    float fade = smoothstep(fsIn.lineOffset, 1.0, fsIn.vtx.y);
+    float xo = abs(fsIn.vtx.x);
     float edge = 1.0 - smoothstep(0.5 - fwidth(xo), 0.5, xo);
-    float a = input.alpha * fade * edge;
-    if (a <= 0.0009)
-    {
-        discard;
-    }
-    return float4(input.color * a * glow, 1.0);
+    return float4(fsIn.color.rgb, fsIn.color.a * fade * edge);
 }
 
-// ---- Rounded endpoint caps (Flux endpoint.vert / endpoint.frag) ----------------
-struct CapVOut
+// ---- Endpoint rendering (Flux endpoint shaders) -----------------------------------
+struct EndVOut
 {
     float4 position : SV_Position;
     float2 vtx : TEXCOORD0;
-    float2 dir : TEXCOORD1;
-    float3 color : TEXCOORD2;
-    float alpha : TEXCOORD3;
+    float2 midpointVec : TEXCOORD1;
+    float4 topColor : TEXCOORD2;
+    float4 bottomColor : TEXCOORD3;
 };
 
-CapVOut cap_vertex(uint vid : SV_VertexID, uint iid : SV_InstanceID)
+EndVOut endpoint_vertex(uint vid : SV_VertexID, uint iid : SV_InstanceID)
 {
-    uint cell = (iid * 7001u) % numLines;
-    uint cellX = cell % gx;
-    uint cellY = cell / gx;
-    float2 grid = float2(cellX, cellY);
-    float2 basepoint = (grid + 0.5) / gridSize;
-    float2 endpoint = gTexA.Load(int3(int(cellX), int(cellY), 0)).xy;
-    float2 fluidVel = gTexB.SampleLevel(samplerLinearClamp, basepoint, 0.0).xy * velGain;
-    float wb = clamp(2.5 * length(fluidVel), 0.0, 1.0);
-    float lineWidthWeight = wb * wb * (3.0 - 2.0 * wb);
-    // Quad corner in [-1,1]^2: (-1,-1),(1,-1),(-1,1),(1,1).
+    uint cols = (uint)gridA.x;
+    uint u = iid % cols;
+    uint v = iid / cols;
+    float2 basepoint = float2(u, v) * gridA.zw;
+    float2 endpoint = gTex0.Load(int3(int(u), int(v), 0)).xy;
+    float4 cw = gTex1.Load(int3(int(u), int(v), 0));
+    float opacity = gTex2.Load(int3(int(u), int(v), 0)).w;
+    float aspect = gridB.w;
+    float zoom = lineA.x;
+    float lineWidth = lineA.z;
+    float glow = lineB.z;
+
+    // Quad corner in [-1,1]^2.
     float2 corner = float2(((vid & 1u) == 0u) ? -1.0 : 1.0, (vid < 2u) ? -1.0 : 1.0);
-    // Quad centred on the line's head, half-size = half the line width (Flux:
-    // 0.5 * uLineWidth * iLineWidth * vertex), same pre-aspect-divide convention.
-    float2 head = float2(aspect, 1.0) * zoom * (basepoint * 2.0 - 1.0) + endpoint;
-    float2 pt = head + 0.5 * lineWidth * lineWidthWeight * corner;
+    float2 pt = float2(aspect, 1.0) * zoom * (basepoint * 2.0 - 1.0)
+              + endpoint
+              + 0.5 * lineWidth * cw.a * corner;
     pt.x /= aspect;
 
-    CapVOut o;
+    EndVOut o;
     o.position = float4(pt, 0.0, 1.0);
     o.vtx = corner;
-    o.dir = endpoint / (length(endpoint) + 1e-5);
-    float angle = atan2(fluidVel.y, fluidVel.x) / 6.28318 + 0.5;
-    o.color = palCyc(angle + 0.35 * (basepoint.x + basepoint.y) + 0.01 * time);
-    o.alpha = wb;
+    o.midpointVec = float2(endpoint.y, -endpoint.x); // endpoint rotated 90 degrees
+    float3 rgb = cw.rgb * glow;
+    o.topColor = float4(rgb, 1.0);
+    // Compensate for the line already drawn underneath (premultiplied reverse-blend).
+    o.bottomColor = float4(rgb - rgb * opacity, 1.0);
     return o;
 }
 
-float4 cap_fragment(CapVOut input) : SV_Target
+float4 endpoint_fragment(EndVOut fsIn) : SV_Target
 {
-    float d = length(input.vtx);
-    float edge = 1.0 - smoothstep(1.0 - fwidth(d), 1.0, d);  // AA disc
-    // Keep only the half beyond the line's end; the line itself covers the rest.
-    float along = dot(input.vtx, input.dir);
-    float halfSide = smoothstep(-fwidth(along), fwidth(along), along);
-    float a = input.alpha * edge * halfSide;
-    if (a <= 0.0009)
+    float4 color = fsIn.bottomColor;
+    float side = (fsIn.vtx.x - fsIn.midpointVec.x) * (-fsIn.midpointVec.y)
+               - (fsIn.vtx.y - fsIn.midpointVec.y) * (-fsIn.midpointVec.x);
+    if (side > 0.0)
     {
-        discard;
+        color = fsIn.topColor;
     }
-    return float4(input.color * a * glow, 1.0);
+    float dist = length(fsIn.vtx);
+    float edge = 1.0 - smoothstep(1.0 - fwidth(dist), 1.0, dist);
+    return float4(color.rgb, color.a * edge);
+}
+
+// ---- Final linear → sRGB encode (wgpu swapchain behavior) -------------------------
+float3 srgbEncode(float3 c)
+{
+    c = clamp(c, 0.0, 1.0);
+    float3 lo = 12.92 * c;
+    float3 hi = 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+    return lerp(hi, lo, step(c, 0.0031308));
+}
+
+float4 encode_frag(FSOut fsIn) : SV_Target
+{
+    return float4(srgbEncode(gTex0.SampleLevel(samplerLinearClamp, fsIn.uv, 0.0).rgb), 1.0);
 }

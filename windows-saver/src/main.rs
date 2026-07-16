@@ -164,7 +164,7 @@ fn clock_strings(s: &Settings) -> (String, Option<String>) {
     (time, date)
 }
 
-fn build_uniforms(s: &Settings, time: f32, res: [f32; 2]) -> Uniforms {
+fn build_uniforms(s: &Settings, time: f32, res: [f32; 2], content_scale: f32) -> Uniforms {
     let p = s.palette();
     let (clock, month) = clock_values();
     Uniforms {
@@ -177,7 +177,9 @@ fn build_uniforms(s: &Settings, time: f32, res: [f32; 2]) -> Uniforms {
         ticks: 1.0,
         size: s.size,
         resolution: res,
-        pad1: [0.0, 0.0],
+        // pad1 = (back-buffer px per logical point, palette index). The fluid
+        // Flux Drift derives its screen-space grid + color mode from these.
+        pad1: [content_scale, s.palette as f32],
         color_a: [p.a[0], p.a[1], p.a[2], 1.0],
         color_b: [p.b[0], p.b[1], p.b[2], 1.0],
         color_c: [p.c[0], p.c[1], p.c[2], 1.0],
@@ -463,7 +465,7 @@ fn run_saver() -> windows::core::Result<()> {
             pos: settings.clock_pos,
         });
         for surf in &surfaces {
-            let u = build_uniforms(&settings, t, [surf.bb_w as f32, surf.bb_h as f32]);
+            let u = build_uniforms(&settings, t, [surf.bb_w as f32, surf.bb_h as f32], surf.content_scale);
             if !gfx.render(surf, &u, 1, clock.as_ref()) {
                 // Device lost (TDR / driver reset). Don't sit on a frozen
                 // frame — end the saver so the desktop returns.
@@ -543,7 +545,7 @@ fn run_preview(parent: HWND) -> windows::core::Result<()> {
             }
         }
         let t = start.elapsed().as_secs_f32();
-        let u = build_uniforms(&settings, t, [surf.bb_w as f32, surf.bb_h as f32]);
+        let u = build_uniforms(&settings, t, [surf.bb_w as f32, surf.bb_h as f32], surf.content_scale);
         let (ctime, cdate) = clock_strings(&settings);
         let clock = (settings.clock_mode != 0).then(|| ClockDraw {
             time: &ctime,
