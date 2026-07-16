@@ -1,0 +1,91 @@
+# Noctura CI — validates all three renderers on every push/PR.
+#
+# The Windows job is the reason this exists: it compiles every HLSL entry point
+# through the REAL runtime compiler (D3DCompile / FXC) via `cargo test`. Local
+# macOS validation uses slang, whose permissive frontend accepted `float2 point`
+# — a reserved word FXC rejects — which silently broke Flux Drift on Windows
+# for days. Only a Windows runner runs the true compiler.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Web (tsc + tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bunx tsc --noEmit
+      - name: Unit tests
+        run: bun test
+
+  windows:
+    name: Windows (.scr build + real FXC shader compile)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: windows-saver
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows-saver
+      - name: Build x64
+        run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Build arm64
+        run: cargo build --release --target aarch64-pc-windows-msvc
+      - name: Shader compile tests (real D3DCompile, sm_4_0 + sm_5_0)
+        run: cargo test --release --target x86_64-pc-windows-msvc -- --nocapture
+      - name: Upload .scr artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: noctura-windows-scr
+          path: |
+            windows-saver/target/x86_64-pc-windows-msvc/release/noctura.exe
+            windows-saver/target/aarch64-pc-windows-msvc/release/noctura.exe
+          if-no-files-found: error
+
+  macos:
+    name: macOS (.saver gates + Tauri backend)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build .saver (shader-check, gpu-time-check, load-check gates)
+        run: ./build.sh
+        working-directory: native-saver
+        env:
+          # CI runners use a virtualized GPU that is slower than any real target
+          # machine; the cost gate exists to catch runaway scenes (100s of ms),
+          # so give it generous headroom rather than false-failing on VM noise.
+          NOCTURA_MAX_SCENE_MS: "400"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Tauri backend check (includes power_status)
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Tauri backend tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Upload .saver artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: noctura-macos-saver
+          path: native-saver/build/Noctura.saver
+          if-no-files-found: error

@@ -1628,3 +1628,80 @@ unsafe impl Send for Gfx {}
 
 #[allow(dead_code)]
 fn _bool_is_used(_: BOOL) {}
+
+#[cfg(test)]
+mod shader_compile_tests {
+    //! Compile every HLSL entry point through the REAL runtime compiler
+    //! (`D3DCompile`, the exact path the saver uses at launch), in BOTH shader
+    //! profiles the runtime can select (sm_5_0 on FL11+, sm_4_0 on FL10).
+    //!
+    //! This exists because macOS-side validation (slang) is more permissive than
+    //! FXC: `float2 point` passed slang but failed FXC at runtime, silently
+    //! dropping Flux Drift to its per-pixel fallback for days. Running this test
+    //! on a Windows CI runner closes that gap permanently.
+    use super::*;
+
+    fn compile_all(src: &str, entries: &[(PCSTR, bool)], label: &str) {
+        // (entry, is_vertex)
+        for &(entry, is_vs) in entries {
+            for (vs_t, ps_t) in [(s!("vs_5_0"), s!("ps_5_0")), (s!("vs_4_0"), s!("ps_4_0"))] {
+                let target = if is_vs { vs_t } else { ps_t };
+                let entry_str = unsafe { std::ffi::CStr::from_ptr(entry.0 as *const i8) }
+                    .to_string_lossy()
+                    .into_owned();
+                let target_str = unsafe { std::ffi::CStr::from_ptr(target.0 as *const i8) }
+                    .to_string_lossy()
+                    .into_owned();
+                let r = unsafe { compile_src(src, entry, target) };
+                assert!(
+                    r.is_ok(),
+                    "{label}: FXC failed to compile entry '{entry_str}' for {target_str}: {:?}",
+                    r.err()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn main_shader_compiles_under_real_fxc() {
+        compile_all(
+            SHADER_SRC,
+            &[(s!("VSMain"), true), (s!("PSMain"), false)],
+            "shader.hlsl",
+        );
+    }
+
+    #[test]
+    fn flux_shaders_compile_under_real_fxc() {
+        compile_all(
+            FLUX_SRC,
+            &[
+                (s!("fs_vertex"), true),
+                (s!("line_vertex"), true),
+                (s!("endpoint_vertex"), true),
+                (s!("noise_frag"), false),
+                (s!("advect_frag"), false),
+                (s!("adjust_frag"), false),
+                (s!("diffuse_frag"), false),
+                (s!("inject_frag"), false),
+                (s!("divergence_frag"), false),
+                (s!("pressure_frag"), false),
+                (s!("subtract_frag"), false),
+                (s!("place_frag"), false),
+                (s!("line_fragment"), false),
+                (s!("endpoint_fragment"), false),
+                (s!("encode_frag"), false),
+            ],
+            "flux.hlsl",
+        );
+    }
+
+    #[test]
+    fn particle_shaders_compile_under_real_fxc() {
+        compile_all(
+            PARTICLES_SRC,
+            &[(s!("swarm_vertex"), true), (s!("swarm_fragment"), false)],
+            "particles.hlsl",
+        );
+    }
+}
