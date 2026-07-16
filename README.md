@@ -34,7 +34,7 @@ Grab the latest build from the [**Releases**](../../releases/latest) page.
 
 18 scenes — **Flux Drift** · Aurora Drift · Northern Lights · Nebula Drift · Fractal Bloom · Liquid Chrome · Caustics · Plasma Field · Kaleidoscope · Black Hole · Hyperspace Tunnel · Deep Space · Particle Drift · **Particle Swarm** · Fireflies · Matrix Rain · Synthwave · Polar Clock
 
-**Flux Drift** is the newest scene: similar to Drift screensaver in MacOS - driven by a real GPU **Stable-Fluids** simulation — thousands of luminous blades combed along an evolving velocity field of swirling vortices.
+**Flux Drift** is the flagship scene: a **faithful port of [Flux](https://flux.sandydoo.me/)** (sandydoo's open-source tribute to the macOS Drift screensaver), rebuilt from its source. A real GPU **Stable-Fluids** simulation (Jos Stam Navier–Stokes, 128² grid) runs at true 60 Hz; thousands of line "blades" — one per 15 logical pixels of your display — chase the fluid with damped-spring physics, and even their *colors* have inertia, smoothed by a second spring from the local flow velocity. Lines accumulate in linear color space with a final sRGB encode, exactly like the reference's rendering pipeline.
 
 Each scene below is shown in a **different one of the 13 color Styles**, to hint at the range — every scene works with every palette.
 
@@ -79,7 +79,7 @@ All three builds can overlay the **time** (or **time + date**) on top of the sce
 | **macOS `.saver`** | Swift · Metal | A true system screensaver in System Settings → Screen Saver. See [`native-saver/`](native-saver/). |
 | **Windows `.scr`** | Rust · Direct3D 11 | A true Windows screensaver (`/s` `/p` `/c`), ~200 KB, no runtime to install. See [`windows-saver/`](windows-saver/). |
 
-The macOS Metal shader and the Windows HLSL shader are faithful ports of the same canonical scene shader, sharing an identical uniform layout — so all three platforms render the same image. **Flux Drift** goes further: all three renderers run the same real GPU **Stable-Fluids** simulation — a 128² Navier-Stokes solver (WebGL render targets, Metal float textures, D3D11 float textures) feeding thousands of instanced line "blades" — so the fluid motion matches across web, macOS, and Windows.
+The macOS Metal shader and the Windows HLSL shader are faithful ports of the same canonical scene shader, sharing an identical uniform layout — so all three platforms render the same image. **Flux Drift** goes further: all three renderers run the same multi-pass architecture ported from the Flux source — a 128² Navier-Stokes solver stepped at a fixed 60 Hz, a per-line state pass carrying 12 floats of spring physics per blade (endpoint, velocity, color, color-velocity, width) in MRT float textures, an endpoint pass with Flux's blend-compensation trick, and linear-space accumulation with an sRGB encode — so the fluid look **and motion** match across web, macOS, and Windows (verified against the live reference with side-by-side captures and motion-decorrelation measurement).
 
 ---
 

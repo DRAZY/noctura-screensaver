@@ -16,10 +16,13 @@ runtime** via `MTLDevice.makeLibrary(source:)`. This is deliberate: the offline
 Tools. Runtime compilation needs neither, so the whole bundle builds with just
 `swiftc`. `Sources/AuroraShader.swift` is a faithful port of the WebGL gallery
 and is kept **at full parity with the Tauri app**: a single fragment entry point
-branches on `u.scene` to render all **13 scenes** in the same gallery order —
-Aurora Drift, Northern Lights, Deep Space, Particle Drift, Plasma Field, Matrix
-Rain, Fireflies, Black Hole, Hyperspace Tunnel, Synthwave, Kaleidoscope, Caustics,
-Polar Clock — across the same **13 color themes**. Matrix Rain uses an encoded 5×7
+branches on `u.scene` to render the **18 scenes** in the same gallery order,
+across the same **13 color themes**. Two scenes go beyond the single-fragment
+architecture: **Flux Drift** (`Sources/AuroraFluxFluid.swift`) runs the real
+multi-pass Stam fluid simulation + per-line spring state ported from
+sandydoo/Flux, and **Particle Swarm** (`Sources/AuroraParticleSwarm.swift`)
+renders a true 60k-point cloud — both dispatched from `AuroraRenderer` with a
+per-pixel fallback if the pipeline can't build. Matrix Rain uses an encoded 5×7
 katakana bitmap font, rendered fine and `fwidth`-anti-aliased and scaled by a new
 **Size** control (which also drives Fireflies and Caustics); Caustics traces the
 F2−F1 Worley border network for true thin light filaments; Northern Lights uses

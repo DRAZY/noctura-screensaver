@@ -1,5 +1,16 @@
 # Drift / Flux — How It Really Renders, and How to Fake It in One Fragment Shader
 
+> ⚠️ **SUPERSEDED (v0.5.0).** This document specifies the *stateless per-pixel
+> approximation* used when Flux Drift had to fit Noctura's single-fragment-shader
+> engine. As of v0.5.0 all three renderers run the REAL multi-pass architecture —
+> the actual Stam fluid solver, per-line spring state in MRT float textures, and
+> Flux's exact rendering pipeline — ported faithfully from the Flux source. See
+> `src/scenes/Drift.ts` + `src/scenes/flux/FluxFluid.ts` (web),
+> `native-saver/Sources/AuroraFluxFluid.swift` (Metal), and
+> `windows-saver/src/flux.hlsl` + `gfx.rs` (D3D11). Sections 1–3 remain accurate
+> as a description of how Flux itself works; the "fake it in one shader" spec
+> (§4+) is retained for history only.
+
 > Research + implementation spec for reproducing the macOS **Drift** screensaver look
 > (via its open-source tribute **Flux**, github.com/sandydoo/flux) inside Noctura's
 > single-fullscreen-fragment-shader engine.

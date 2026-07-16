@@ -1,22 +1,30 @@
 # Noctura
 
 A cross-platform animated screensaver with a **gallery of GPU scenes**, built on
-Tauri + React + TypeScript + Three.js/WebGL. Ships in two forms:
+Tauri + React + TypeScript + Three.js/WebGL. Ships in three forms:
 
 1. **Noctura app** (`.app`/`.dmg`) — the full interactive gallery: browse scenes,
    tune them live, settings persist. The place to explore and configure.
 2. **Noctura.saver** — a native macOS Metal screensaver module that installs into
    **System Settings → Screen Saver** and is driven by macOS itself (idle
    activation, multi-monitor, and input-to-dismiss are handled by the OS).
+3. **Noctura.scr** — a native Windows Direct3D 11 screensaver (`windows-saver/`),
+   a single ~400 KB executable with no runtime to install, cross-compiled from
+   macOS via cargo-xwin.
 
 ## Scenes
 
 | Scene | Look | Reference |
 |-------|------|-----------|
+| **Flux Drift** | Real fluid-sim blades combed around living vortices | Faithful port of [Flux](https://github.com/sandydoo/flux) (macOS Drift) |
 | Aurora Drift | Domain-warped flowing color fields | Aeon / Drift |
 | Northern Lights | Swaying translucent aurora curtains | macOS XDR / Aerial |
+| Nebula Drift | Slow volumetric nebula clouds | Deep-sky photography |
+| Fractal Bloom | Unfolding kaleidoscopic fractal petals | Fractal art |
+| Liquid Chrome | Molten reflective metal waves | T2 / chrome |
 | Deep Space | Parallax stars + drifting nebula | Aerial Deep Space |
 | Particle Drift | Luminous curl-noise particle flow | Drift |
+| Particle Swarm | 60k-point 3D murmuration | Starling flocks |
 | Plasma Field | Liquid demoscene color waves | Plasma |
 | Matrix Rain | Cascading digital glyph rain | The Matrix |
 | Fireflies | Drifting glowing swarm in the dark | Ambient |
@@ -26,6 +34,20 @@ Tauri + React + TypeScript + Three.js/WebGL. Ships in two forms:
 | Kaleidoscope | Living mirrored color mandala | Kaleidoscope |
 | Caustics | Rippling pool-light webs over deep water | Sunlit water |
 | Polar Clock | Concentric live time arcs | Polar Clock |
+
+**Flux Drift** is not a fragment-shader effect like the others — it's a faithful
+multi-pass port of the Flux source, identical on all three renderers: a 128²
+Stam Stable-Fluids solver stepped at a fixed real-time 60 Hz (MacCormack
+advection, viscous diffusion, 19-iteration pressure projection, simplex-noise
+forcing with per-channel drift/breathing/crossfade), a screen-adaptive line grid
+(one blade per 15 logical px), per-line damped-spring physics with 12 floats of
+persistent state (endpoint, spring velocity, color, color velocity, width — the
+color itself is a spring chasing a velocity-derived target), a rounded-endpoint
+pass using Flux's blend-compensation trick, and linear-space (SRC_ALPHA, ONE)
+accumulation with a final sRGB encode. Verified against https://flux.sandydoo.me/
+with side-by-side captures and motion-decorrelation measurement
+(`scripts/capture-drift.ts` — real-clock captures; Chrome's virtual-time mode
+starves real-time simulations and must not be used to verify this scene).
 
 Matrix Rain uses a real encoded 5×7 katakana bitmap font, rendered fine and small
 with a **Glyph Size** control; Caustics traces the F2−F1 Worley border network for

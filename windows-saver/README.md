@@ -6,14 +6,14 @@ Tauri, no runtime to install — D3D11 ships with every supported Windows. The
 resulting `.scr` is ~200 KB and starts instantly.
 
 This is the Windows counterpart to `../native-saver` (macOS Metal). The two are
-kept at **full parity**: same 13 scenes, same 13 palettes, same control ranges,
+kept at **full parity**: same 18 scenes, same 13 palettes, same control ranges,
 ported from one canonical shader.
 
 ## Why Direct3D 11 + runtime HLSL
 
 The scene shader (`src/shader.hlsl`) is a faithful translation of the macOS
 Metal shader (`../native-saver/Sources/AuroraShader.swift`) — a single pixel
-shader that branches on `u.scene` to draw all 13 scenes, with the identical
+shader that branches on `u.scene` to draw the fragment scenes, with the identical
 112-byte uniform layout and the same final dither. It is compiled **at runtime**
 via `D3DCompile` (`d3dcompiler_47.dll`, present on all Windows), mirroring the
 macOS saver's runtime MSL compilation — so there's no offline FXC step.
@@ -71,7 +71,9 @@ cargo build --release --target x86_64-pc-windows-msvc
 |-------------------|---------------------------------------------------------------|
 | `src/main.rs`     | Flag parsing, multi-monitor saver, preview, input-to-dismiss  |
 | `src/gfx.rs`      | D3D11 device, runtime HLSL compile, swap-chain surfaces, draw |
-| `src/shader.hlsl` | 13-scene pixel shader (port of the Metal shader)              |
+| `src/shader.hlsl` | Multi-scene pixel shader (port of the Metal shader)           |
+| `src/flux.hlsl`   | Flux Drift: faithful multi-pass sandydoo/Flux port (fluid sim, line/endpoint passes, sRGB encode). ⚠ HLSL reserves `point`/`line`/`clip`… — sweep before editing |
+| `src/particles.hlsl` | Particle Swarm: 60k-point instanced cloud                  |
 | `src/settings.rs` | Scenes, palettes, ranges, registry persistence                |
 | `src/config.rs`   | Programmatic Win32 configuration dialog                        |
 
