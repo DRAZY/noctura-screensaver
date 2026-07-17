@@ -6,7 +6,7 @@
 //!   /c[:<hwnd>]   show the configuration dialog
 //! (no args)       also treated as configure, for double-click in Explorer.
 //!
-//! Rendering is native Direct3D 11 (see `gfx`), running the exact same 13
+//! Rendering is native Direct3D 11 (see `gfx`), running the exact same 18
 //! scenes / 13 palettes as the macOS saver and the WebGL gallery, for full
 //! cross-platform parity with zero runtime dependencies (D3D11 ships on every
 //! supported Windows; nothing to install).

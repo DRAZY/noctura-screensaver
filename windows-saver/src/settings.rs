@@ -1,6 +1,6 @@
 //! Persisted settings shared between the live saver, the preview pane, and the
 //! config dialog. Mirrors the macOS `AuroraPreferences` (Preferences.swift):
-//! same scenes, same 13 palettes, same control ranges and defaults. Stored in
+//! same 18 scenes, same 13 palettes, same control ranges and defaults. Stored in
 //! the Windows registry under HKEY_CURRENT_USER\Software\Noctura.
 
 use windows::core::{w, PCWSTR};
