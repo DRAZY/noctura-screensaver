@@ -104,6 +104,17 @@ struct LineParams {
 
 const _: () = assert!(std::mem::size_of::<LineParams>() == 160);
 
+/// One line-spring grid: MRT state ping-pong ([0] endpoint+springVel,
+/// [1] color+width, [2] colorVel+opacity) plus its own line-animation clock.
+/// encode() runs once per surface per frame with the SAME u.time, so the line
+/// dt must be tracked per grid — a global last_time would give dt=0 to every
+/// surface after the first and freeze its lines.
+struct FluxGrid {
+    state_a: Vec<Tex>,
+    state_b: Vec<Tex>,
+    last_time: f32,
+}
+
 /// Exact port of Flux `NoiseChannel::tick` — breathing scale + offset crossfade.
 struct NoiseChannel {
     base_scale: f32,
@@ -250,15 +261,16 @@ struct FluxFluid {
     prs_a: Tex,
     prs_b: Tex,
     div_t: Tex,
-    // Line state MRT ping-pong: [0]=(endpoint, springVel) [1]=(color, width)
-    // [2]=(colorVel, opacity). Rebuilt when the logical size / density changes.
-    state_a: Vec<Tex>,
-    state_b: Vec<Tex>,
-    // Linear accumulation target (rgba16f) + sRGB encode to the back buffer.
-    acc_t: Option<Tex>,
-    acc_size: (u32, u32),
-    cols: u32,
-    rows: u32,
+    // Per-GRID line state, keyed by (cols, rows). The full-screen saver renders
+    // one surface PER MONITOR through this single FluxFluid; monitors of
+    // different resolutions produce different grids, and a single shared grid
+    // got recreated+zero-cleared EVERY frame (alternating sizes) — the springs
+    // never developed and every monitor showed black. (The Settings mini-pane
+    // has exactly one surface, which is why preview looked fine.) Same-size
+    // monitors intentionally share a grid and render identical content.
+    grids: std::collections::HashMap<(u32, u32), FluxGrid>,
+    // Linear accumulation targets (rgba16f), keyed by back-buffer size.
+    accs: std::collections::HashMap<(u32, u32), Tex>,
     sampler: ID3D11SamplerState,
     add_blend: ID3D11BlendState,
     fluid_cb: ID3D11Buffer,
@@ -438,12 +450,8 @@ impl FluxFluid {
                     prs_a,
                     prs_b,
                     div_t,
-                    state_a: Vec::new(),
-                    state_b: Vec::new(),
-                    acc_t: None,
-                    acc_size: (0, 0),
-                    cols: 0,
-                    rows: 0,
+                    grids: std::collections::HashMap::new(),
+                    accs: std::collections::HashMap::new(),
                     sampler,
                     add_blend,
                     fluid_cb,
@@ -618,8 +626,10 @@ impl FluxFluid {
         std::mem::swap(&mut self.vel_a, &mut self.vel_b);
     }
 
-    /// (Re)build the grid + state textures from the logical size and density.
-    unsafe fn rebuild_grid(&mut self, ctx: &ID3D11DeviceContext, logical_w: f32, logical_h: f32, density: f32) -> bool {
+    /// Compute grid dimensions for a logical size + density, set the
+    /// screen-derived line uniforms, and return (cols, rows). Pure w.r.t. GPU
+    /// state — the per-grid textures live in `self.grids`.
+    fn grid_dims(&mut self, logical_w: f32, logical_h: f32, density: f32) -> (u32, u32) {
         // clamp_logical_size: upscale tiny viewports to a working minimum.
         let upscale = (800.0 / logical_w).max(800.0 / logical_h).max(1.0);
         let lw = logical_w * upscale;
@@ -627,43 +637,50 @@ impl FluxFluid {
         let spacing = GRID_SPACING / (0.5 + density); // density 0.5 → Flux's 15
         let cols0 = ((lw / spacing) as u32).max(1);
         let rows0 = (((lh / lw) * cols0 as f32) as u32).max(1);
-        let new_cols = cols0 + 1;
-        let new_rows = rows0 + 1;
-        if new_cols != self.cols || new_rows != self.rows {
-            self.cols = new_cols;
-            self.rows = new_rows;
-            self.state_a.clear();
-            self.state_b.clear();
-            for i in 0..3 {
-                let a = Tex::make(&self.device, new_cols, new_rows, DXGI_FORMAT_R32G32B32A32_FLOAT);
-                let b = Tex::make(&self.device, new_cols, new_rows, DXGI_FORMAT_R32G32B32A32_FLOAT);
-                match (a, b) {
-                    (Ok(a), Ok(b)) => {
-                        ctx.ClearRenderTargetView(&a.rtv, &[0.0; 4]);
-                        ctx.ClearRenderTargetView(&b.rtv, &[0.0; 4]);
-                        self.state_a.push(a);
-                        self.state_b.push(b);
-                    }
-                    _ => {
-                        crate::log::line(&format!("flux: state texture {i} create failed"));
-                        self.cols = 0;
-                        self.rows = 0;
-                        return false;
-                    }
-                }
-            }
-            crate::log::line(&format!("flux: grid {new_cols}x{new_rows} ({} lines)", new_cols * new_rows));
-        }
-        self.line.grid_a = [self.cols as f32, self.rows as f32, 1.0 / cols0 as f32, 1.0 / rows0 as f32];
-        self.line.grid_b[0] = 64.0 * (self.cols as f32 / 171.0).max(1.0);
-        self.line.grid_b[1] = 64.0 * (self.rows as f32 / 171.0).max(1.0);
+        let cols = cols0 + 1;
+        let rows = rows0 + 1;
+        self.line.grid_a = [cols as f32, rows as f32, 1.0 / cols0 as f32, 1.0 / rows0 as f32];
+        self.line.grid_b[0] = 64.0 * (cols as f32 / 171.0).max(1.0);
+        self.line.grid_b[1] = 64.0 * (rows as f32 / 171.0).max(1.0);
         self.line.grid_b[3] = lw / lh;
         // Flux line_scale_factor stroke sizing (wgpu defaults: length 450, width 9).
         let pf = lh / lw;
         let lsf = 1.0 / ((1.0 - pf) * lw + pf * lh).min(2000.0);
         self.line.line_a[1] = ZOOM * 450.0 * lsf; // scaled by Size in encode()
         self.line.line_a[2] = ZOOM * 9.0 * lsf;
-        true
+        (cols, rows)
+    }
+
+    /// Get-or-create the line-state grid for (cols, rows). Freshly created
+    /// grids are zero-cleared (lines grow in from rest, like Flux startup).
+    unsafe fn take_grid(&mut self, ctx: &ID3D11DeviceContext, cols: u32, rows: u32, now: f32) -> Option<FluxGrid> {
+        if let Some(g) = self.grids.remove(&(cols, rows)) {
+            return Some(g);
+        }
+        // Backstop: live density changes create new grid sizes; don't hoard VRAM.
+        if self.grids.len() >= 8 {
+            self.grids.clear();
+        }
+        let mut state_a = Vec::with_capacity(3);
+        let mut state_b = Vec::with_capacity(3);
+        for i in 0..3 {
+            let a = Tex::make(&self.device, cols, rows, DXGI_FORMAT_R32G32B32A32_FLOAT);
+            let b = Tex::make(&self.device, cols, rows, DXGI_FORMAT_R32G32B32A32_FLOAT);
+            match (a, b) {
+                (Ok(a), Ok(b)) => {
+                    ctx.ClearRenderTargetView(&a.rtv, &[0.0; 4]);
+                    ctx.ClearRenderTargetView(&b.rtv, &[0.0; 4]);
+                    state_a.push(a);
+                    state_b.push(b);
+                }
+                _ => {
+                    crate::log::line(&format!("flux: state texture {i} create failed ({cols}x{rows})"));
+                    return None;
+                }
+            }
+        }
+        crate::log::line(&format!("flux: grid {cols}x{rows} ({} lines)", cols * rows));
+        Some(FluxGrid { state_a, state_b, last_time: now - STEP })
     }
 
     /// Flux drawer.rs LineUniforms::tick — line-variance noise scroll, per frame.
@@ -686,17 +703,18 @@ impl FluxFluid {
         self.line.grid_b[2] = self.line_noise_offset1;
     }
 
-    /// place_lines: fullscreen MRT pass over the 3 state textures (raw frame dt).
-    unsafe fn place_step(&mut self, ctx: &ID3D11DeviceContext, dt: f32) {
-        if dt <= 0.0 || self.state_a.len() != 3 {
+    /// place_lines: fullscreen MRT pass over one grid's 3 state textures (raw
+    /// frame dt for THIS grid — each grid tracks its own clock).
+    unsafe fn place_step(&mut self, ctx: &ID3D11DeviceContext, grid: &mut FluxGrid, cols: u32, rows: u32, dt: f32) {
+        if dt <= 0.0 || grid.state_a.len() != 3 {
             return;
         }
         self.line.line_b[1] = dt;
-        Self::set_viewport(ctx, self.cols, self.rows);
+        Self::set_viewport(ctx, cols, rows);
         let rtvs = [
-            Some(self.state_b[0].rtv.clone()),
-            Some(self.state_b[1].rtv.clone()),
-            Some(self.state_b[2].rtv.clone()),
+            Some(grid.state_b[0].rtv.clone()),
+            Some(grid.state_b[1].rtv.clone()),
+            Some(grid.state_b[2].rtv.clone()),
         ];
         ctx.OMSetRenderTargets(Some(&rtvs), None);
         let line = self.line;
@@ -706,9 +724,9 @@ impl FluxFluid {
             0,
             Some(&[
                 Some(self.vel_a.srv.clone()),
-                Some(self.state_a[0].srv.clone()),
-                Some(self.state_a[1].srv.clone()),
-                Some(self.state_a[2].srv.clone()),
+                Some(grid.state_a[0].srv.clone()),
+                Some(grid.state_a[1].srv.clone()),
+                Some(grid.state_a[2].srv.clone()),
             ]),
         );
         ctx.PSSetConstantBuffers(2, Some(&[Some(self.line_cb.clone())]));
@@ -719,7 +737,7 @@ impl FluxFluid {
         // Unbind the MRT before the states become shader inputs next pass.
         ctx.OMSetRenderTargets(None, None);
         ctx.PSSetShaderResources(0, Some(&[None, None, None, None]));
-        std::mem::swap(&mut self.state_a, &mut self.state_b);
+        std::mem::swap(&mut grid.state_a, &mut grid.state_b);
     }
 
     unsafe fn encode(&mut self, ctx: &ID3D11DeviceContext, surf: &Surface, u: &Uniforms) {
@@ -737,9 +755,8 @@ impl FluxFluid {
         let content_scale = if u.pad1[0] > 0.0 { u.pad1[0] } else { 1.0 };
         let logical_w = (u.resolution[0] / content_scale).max(1.0);
         let logical_h = (u.resolution[1] / content_scale).max(1.0);
-        if !self.rebuild_grid(ctx, logical_w, logical_h, u.density) {
-            return;
-        }
+        let (cols, rows) = self.grid_dims(logical_w, logical_h, u.density);
+        let Some(mut grid) = self.take_grid(ctx, cols, rows, now) else { return };
 
         // Controls: Size → stroke scale; Intensity → brightness; Style → color mode
         // (palette 0 = Flux "Original" velocity coloring, others = color wheel).
@@ -796,21 +813,32 @@ impl FluxFluid {
             self.fluid_frame_time = STEP; // drop backlog after a stall
         }
 
-        // Lines: place with the RAW frame delta (Flux line animation timing).
-        self.tick_line_noise(dt);
-        self.place_step(ctx, dt);
+        // Lines: place with THIS GRID's raw frame delta. encode() runs once per
+        // surface per frame with the same u.time; a shared clock would hand
+        // dt=0 to every surface after the first and freeze its lines.
+        let grid_dt = (now - grid.last_time).clamp(0.0, MAX_FRAME_TIME) * (u.speed / 0.3);
+        grid.last_time = now;
+        self.tick_line_noise(grid_dt);
+        self.place_step(ctx, &mut grid, cols, rows, grid_dt);
 
         // Accumulate lines + endpoints in LINEAR rgba16f, then sRGB-encode out.
-        if self.acc_t.is_none() || self.acc_size != (surf.bb_w, surf.bb_h) {
-            self.acc_t = Tex::make(&self.device, surf.bb_w, surf.bb_h, DXGI_FORMAT_R16G16B16A16_FLOAT)
-                .map_err(|e| crate::log::line(&format!("flux: acc texture create failed: {e}")))
-                .ok();
-            self.acc_size = (surf.bb_w, surf.bb_h);
+        // One accumulator per back-buffer size (per-monitor; sizes may differ).
+        if !self.accs.contains_key(&(surf.bb_w, surf.bb_h)) {
+            if self.accs.len() >= 8 {
+                self.accs.clear();
+            }
+            match Tex::make(&self.device, surf.bb_w, surf.bb_h, DXGI_FORMAT_R16G16B16A16_FLOAT) {
+                Ok(t) => {
+                    self.accs.insert((surf.bb_w, surf.bb_h), t);
+                }
+                Err(e) => {
+                    crate::log::line(&format!("flux: acc texture create failed: {e}"));
+                    self.grids.insert((cols, rows), grid);
+                    return;
+                }
+            }
         }
-        let Some(acc) = self.acc_t.as_ref() else { return };
-        if self.state_a.len() != 3 {
-            return;
-        }
+        let acc = &self.accs[&(surf.bb_w, surf.bb_h)];
 
         Self::set_viewport(ctx, surf.bb_w, surf.bb_h);
         ctx.OMSetRenderTargets(Some(&[Some(acc.rtv.clone())]), None);
@@ -821,9 +849,9 @@ impl FluxFluid {
         ctx.VSSetShaderResources(
             0,
             Some(&[
-                Some(self.state_a[0].srv.clone()),
-                Some(self.state_a[1].srv.clone()),
-                Some(self.state_a[2].srv.clone()),
+                Some(grid.state_a[0].srv.clone()),
+                Some(grid.state_a[1].srv.clone()),
+                Some(grid.state_a[2].srv.clone()),
             ]),
         );
         let line_cbs = [Some(self.line_cb.clone())];
@@ -832,7 +860,7 @@ impl FluxFluid {
         ctx.VSSetShader(&self.line_vs, None);
         ctx.PSSetShader(&self.line_ps, None);
         ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-        let count = self.cols * self.rows;
+        let count = cols * rows;
         ctx.DrawInstanced(4, count, 0, 0);
         // Endpoints on top of the lines (same blend/textures/cbuffer).
         ctx.VSSetShader(&self.endpoint_vs, None);
@@ -850,6 +878,9 @@ impl FluxFluid {
         ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx.Draw(3, 0);
         ctx.PSSetShaderResources(0, Some(&[None]));
+
+        // Return the grid to the cache for this size's next frame.
+        self.grids.insert((cols, rows), grid);
     }
 }
 

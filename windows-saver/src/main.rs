@@ -187,16 +187,18 @@ fn build_uniforms(s: &Settings, time: f32, res: [f32; 2], content_scale: f32) ->
     }
 }
 
-/// Largest back-buffer edge allowed for a given scene. Most scenes use the global
-/// MAX_EDGE backstop, but the streamline-gather Flux Drift (scene 16) is an order
-/// of magnitude heavier per pixel than any other scene, and the Windows saver has
+/// Largest back-buffer edge allowed for a given scene. All scenes now use the
+/// global MAX_EDGE backstop. (Historical: the pre-v0.5.0 per-pixel Flux Drift was
+/// an order of magnitude heavier per pixel than any other scene, and the saver has
 /// no adaptive resolution controller (unlike macOS/web). To keep it from pegging a
 /// GPU it renders at a hard-capped resolution and upscales — soft but smooth. This
 /// is the Windows analogue of the macOS adaptive floor; a real per-frame governor
 /// is future work.
 fn scene_max_edge(scene: usize) -> u32 {
     match scene {
-        16 => 1600, // Flux Drift — heavy; cap hard (no adaptive controller here)
+        // Flux Drift: since v0.5.0 the cost is per-LINE (grid scales with the
+        // logical size, not the back buffer), so the old per-pixel 1600 cap is
+        // no longer needed — render crisp like every other scene.
         _ => MAX_EDGE,
     }
 }
