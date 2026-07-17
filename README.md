@@ -1,6 +1,6 @@
 # Noctura
 
-**A cross-platform animated screensaver — 18 GPU-rendered scenes, 13 color palettes — for macOS and Windows.**
+**A cross-platform animated screensaver — 11 curated GPU-rendered scenes, 13 color palettes — for macOS and Windows.**
 
 Noctura runs the *same* scenes everywhere, three ways: a desktop gallery app, a native macOS `.saver`, and a native Windows `.scr`. Every scene is a real-time GPU fragment shader (WebGL on the web build, Metal on macOS, Direct3D 11 on Windows), kept at pixel-level parity across all three.
 
@@ -32,7 +32,7 @@ Grab the latest build from the [**Releases**](../../releases/latest) page.
 
 ## ✨ Scenes
 
-18 scenes — **Flux Drift** · Aurora Drift · Northern Lights · Nebula Drift · Fractal Bloom · Liquid Chrome · Caustics · Plasma Field · Kaleidoscope · Black Hole · Hyperspace Tunnel · Deep Space · Particle Drift · **Particle Swarm** · Fireflies · Matrix Rain · Synthwave · Polar Clock
+11 curated scenes — **Flux Drift** · Northern Lights · Deep Space · Particle Drift · Plasma Field · Fireflies · Black Hole · Caustics · Nebula Drift · Fractal Bloom · **Particle Swarm**
 
 **Flux Drift** is the flagship scene: a **faithful port of [Flux](https://flux.sandydoo.me/)** (sandydoo's open-source tribute to the macOS Drift screensaver), rebuilt from its source. A real GPU **Stable-Fluids** simulation (Jos Stam Navier–Stokes, 128² grid) runs at true 60 Hz; thousands of line "blades" — one per 15 logical pixels of your display — chase the fluid with damped-spring physics, and even their *colors* have inertia, smoothed by a second spring from the local flow velocity. Lines accumulate in linear color space with a final sRGB encode, exactly like the reference's rendering pipeline.
 
@@ -40,23 +40,16 @@ Each scene below is shown in a **different one of the 13 color Styles**, to hint
 
 <p>
 <img src="screenshots/scenes/FluxDrift.png" width="32%" alt="Flux Drift — Aurora style">
-<img src="screenshots/scenes/AuroraDrift.png" width="32%" alt="Aurora Drift — Borealis style">
 <img src="screenshots/scenes/NorthernLights.png" width="32%" alt="Northern Lights — Mint style">
-<img src="screenshots/scenes/NebulaDrift.png" width="32%" alt="Nebula Drift — Nebula style">
-<img src="screenshots/scenes/FractalBloom.png" width="32%" alt="Fractal Bloom — Sunset style">
-<img src="screenshots/scenes/LiquidChrome.png" width="32%" alt="Liquid Chrome — Ice style">
-<img src="screenshots/scenes/Caustics.png" width="32%" alt="Caustics — Ocean style">
-<img src="screenshots/scenes/PlasmaField.png" width="32%" alt="Plasma Field — Synthwave style">
-<img src="screenshots/scenes/Kaleidoscope.png" width="32%" alt="Kaleidoscope — Rose style">
-<img src="screenshots/scenes/BlackHole.png" width="32%" alt="Black Hole — Ember style">
-<img src="screenshots/scenes/HyperspaceTunnel.png" width="32%" alt="Hyperspace Tunnel — Gold style">
 <img src="screenshots/scenes/DeepSpace.png" width="32%" alt="Deep Space — Deep Space style">
 <img src="screenshots/scenes/ParticleDrift.png" width="32%" alt="Particle Drift — Monochrome style">
-<img src="screenshots/scenes/ParticleSwarm.png" width="32%" alt="Particle Swarm — Gold style">
+<img src="screenshots/scenes/PlasmaField.png" width="32%" alt="Plasma Field — Synthwave style">
 <img src="screenshots/scenes/Fireflies.png" width="32%" alt="Fireflies — Gold style">
-<img src="screenshots/scenes/MatrixRain.png" width="32%" alt="Matrix Rain — Borealis style">
-<img src="screenshots/scenes/Synthwave.png" width="32%" alt="Synthwave — Ember style">
-<img src="screenshots/scenes/PolarClock.png" width="32%" alt="Polar Clock — Ice style">
+<img src="screenshots/scenes/BlackHole.png" width="32%" alt="Black Hole — Ember style">
+<img src="screenshots/scenes/Caustics.png" width="32%" alt="Caustics — Ocean style">
+<img src="screenshots/scenes/NebulaDrift.png" width="32%" alt="Nebula Drift — Nebula style">
+<img src="screenshots/scenes/FractalBloom.png" width="32%" alt="Fractal Bloom — Sunset style">
+<img src="screenshots/scenes/ParticleSwarm.png" width="32%" alt="Particle Swarm — Gold style">
 </p>
 
 Each scene is tunable: **Style** (13 palettes — Aurora, Borealis, Deep Space, Ocean, Ember, Synthwave, Sunset, Nebula, Mint, Gold, Ice, Rose, Monochrome), **Speed**, **Intensity**, **Density**, **Size**, and a **Performance** mode (Auto / Full / Balanced / Power Saver) that scales render resolution to stay smooth on any GPU.

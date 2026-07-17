@@ -219,7 +219,8 @@ unsafe extern "system" fn config_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 if !ptr.is_null() {
                     let st = &*ptr;
                     let mut s = Settings::load();
-                    s.scene = send(st.scene, CB_GETCURSEL, 0, 0).max(0) as usize;
+                    s.scene = crate::settings::SCENE_IDS
+                        [(send(st.scene, CB_GETCURSEL, 0, 0).max(0) as usize).min(crate::settings::SCENE_IDS.len() - 1)];
                     s.palette = send(st.palette, CB_GETCURSEL, 0, 0).max(0) as usize;
                     s.performance = send(st.perf, CB_GETCURSEL, 0, 0).max(0) as usize;
                     s.speed = tb_to_f(send(st.speed, TBM_GETPOS, 0, 0) as i32, SPEED_RANGE);
@@ -305,7 +306,8 @@ pub fn show_config(owner: Option<isize>) {
         };
 
         make_label(hwnd, hinst, "Scene", 20, 22);
-        let scene = make_combo(hwnd, hinst, ID_SCENE, 150, 18, &SCENES, s.scene);
+        let scene = make_combo(hwnd, hinst, ID_SCENE, 150, 18, &SCENES,
+            crate::settings::scene_position(s.scene).unwrap_or(0));
         make_label(hwnd, hinst, "Style", 20, 60);
         let palette_items: Vec<&str> = PALETTES.iter().map(|p| p.name).collect();
         let palette = make_combo(hwnd, hinst, ID_PALETTE, 150, 56, &palette_items, s.palette);

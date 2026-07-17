@@ -606,7 +606,7 @@ final class AuroraConfigController: NSObject {
     /// on this controller's fresh window.
     func refreshFromPreferences() {
         guard let preferences else { return }
-        scenePopup.selectItem(at: preferences.sceneIndex)
+        scenePopup.selectItem(at: AuroraScene.position(forShaderIndex: preferences.sceneIndex) ?? 0)
         palettePopup.selectItem(at: preferences.paletteIndex)
         speedSlider.doubleValue = Double(preferences.speed)
         intensitySlider.doubleValue = Double(preferences.intensity)
@@ -692,7 +692,7 @@ final class AuroraConfigController: NSObject {
 
     @objc private func save() {
         if let preferences {
-            preferences.sceneIndex = scenePopup.indexOfSelectedItem
+            preferences.sceneIndex = AuroraScene.all[max(0, scenePopup.indexOfSelectedItem)].shaderIndex
             preferences.paletteIndex = palettePopup.indexOfSelectedItem
             preferences.speed = Float(speedSlider.doubleValue)
             preferences.intensity = Float(intensitySlider.doubleValue)

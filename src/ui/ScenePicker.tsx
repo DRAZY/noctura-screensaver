@@ -16,20 +16,14 @@ export interface ScenePickerProps {
 // A representative swatch per scene id so the cards read as a visual gallery
 // without the cost of live offscreen thumbnail renders.
 const SWATCH: Record<string, string> = {
-  "ambient-gradient": "linear-gradient(135deg, #1a1240, #c81e8a 55%, #f5a623)",
   "aurora-ribbons": "linear-gradient(135deg, #051721, #13c285 55%, #9ef26b)",
   starfield: "linear-gradient(135deg, #02030a, #3a2f8f 60%, #cfe0ff)",
   "flowing-particles": "linear-gradient(135deg, #170230, #d91c8f 55%, #2ec2eb)",
+  "particle-drift": "linear-gradient(135deg, #0b0716, #8a4bd9 55%, #ffd9f2)",
   plasma: "linear-gradient(135deg, #170230, #d91c8f 55%, #2ec2eb)",
-  "matrix-rain": "linear-gradient(135deg, #001405, #0a8f33 55%, #d9ffe0)",
   fireflies: "linear-gradient(135deg, #05080a, #6b4e0a 55%, #fad043)",
   "black-hole": "linear-gradient(135deg, #1c0503, #c73b0a 55%, #fff1c2)",
-  tunnel: "linear-gradient(135deg, #02030a, #3a2f8f 55%, #8fb6ff)",
-  "synthwave-grid": "linear-gradient(135deg, #170230, #ff5ea0 55%, #2ec2eb)",
-  kaleidoscope: "linear-gradient(135deg, #0a0418, #7b2ff7 55%, #f76fd4)",
   caustics: "linear-gradient(135deg, #021a2b, #0b6e8c 55%, #9ff5ff)",
-  "polar-clock": "linear-gradient(135deg, #030e2e, #0c5ca3 55%, #6bd2e0)",
-  liquidchrome: "linear-gradient(135deg, #0a0f1a, #6f8fc0 55%, #dbe9ff)",
   nebula: "linear-gradient(135deg, #0a0418, #3a6ff7 55%, #f76fd4)",
   fractalbloom: "linear-gradient(135deg, #0a0418, #c81e8a 55%, #f5a623)",
   drift: "linear-gradient(135deg, #04030a, #e01e8f 45%, #22c55e 72%, #3b7bf5)",

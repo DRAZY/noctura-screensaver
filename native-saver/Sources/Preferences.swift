@@ -6,30 +6,32 @@ import simd
 /// `CFBundleIdentifier` in Info.plist.
 let kAuroraModuleName = "com.aurora.screensaver"
 
-/// The scenes the saver can display — mirrors the shader's `u.scene` branch
-/// order and the WebGL gallery.
+/// The scenes the saver offers. `shaderIndex` is the STABLE internal dispatch
+/// id (the shader's `u.scene` branch / the historical 18-scene order) — the
+/// curated 2026-07 lineup shows 11 of them, but persisted settings and the
+/// Metal dispatch keep using the internal index, so saved scenes survive
+/// curation and all 13 color Styles remain wired to every scene.
 struct AuroraScene {
     let name: String
+    let shaderIndex: Int
     static let all: [AuroraScene] = [
-        AuroraScene(name: "Aurora Drift"),
-        AuroraScene(name: "Northern Lights"),
-        AuroraScene(name: "Deep Space"),
-        AuroraScene(name: "Particle Drift"),
-        AuroraScene(name: "Plasma Field"),
-        AuroraScene(name: "Matrix Rain"),
-        AuroraScene(name: "Fireflies"),
-        AuroraScene(name: "Black Hole"),
-        AuroraScene(name: "Hyperspace Tunnel"),
-        AuroraScene(name: "Synthwave"),
-        AuroraScene(name: "Kaleidoscope"),
-        AuroraScene(name: "Caustics"),
-        AuroraScene(name: "Polar Clock"),
-        AuroraScene(name: "Liquid Chrome"),
-        AuroraScene(name: "Nebula Drift"),
-        AuroraScene(name: "Fractal Bloom"),
-        AuroraScene(name: "Flux Drift"),
-        AuroraScene(name: "Particle Swarm"),
+        AuroraScene(name: "Northern Lights", shaderIndex: 1),
+        AuroraScene(name: "Deep Space", shaderIndex: 2),
+        AuroraScene(name: "Particle Drift", shaderIndex: 3),
+        AuroraScene(name: "Plasma Field", shaderIndex: 4),
+        AuroraScene(name: "Fireflies", shaderIndex: 6),
+        AuroraScene(name: "Black Hole", shaderIndex: 7),
+        AuroraScene(name: "Caustics", shaderIndex: 11),
+        AuroraScene(name: "Nebula Drift", shaderIndex: 14),
+        AuroraScene(name: "Fractal Bloom", shaderIndex: 15),
+        AuroraScene(name: "Flux Drift", shaderIndex: 16),
+        AuroraScene(name: "Particle Swarm", shaderIndex: 17),
     ]
+
+    /// List position of a stored shader index, or nil if that scene was removed.
+    static func position(forShaderIndex idx: Int) -> Int? {
+        all.firstIndex(where: { $0.shaderIndex == idx })
+    }
 }
 
 /// A performance profile: caps the Metal drawable's render scale (the #1 GPU
@@ -127,8 +129,16 @@ final class AuroraPreferences {
         ])
     }
 
+    /// The INTERNAL shader index of the selected scene (stable across curation).
+    /// A stored index whose scene was removed falls back to the default
+    /// (Northern Lights) rather than silently showing a different scene.
     var sceneIndex: Int {
-        get { clampInt(defaults.integer(forKey: kScene), 0, AuroraScene.all.count - 1) }
+        get {
+            let stored = defaults.integer(forKey: kScene)
+            return AuroraScene.position(forShaderIndex: stored) != nil
+                ? stored
+                : AuroraScene.all[0].shaderIndex
+        }
         set { defaults.set(newValue, forKey: kScene) }
     }
     var paletteIndex: Int {

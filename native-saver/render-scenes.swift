@@ -101,7 +101,7 @@ struct RenderScenes {
             else { fail("bitmap rep") }
             memcpy(rep.bitmapData!, raw, raw.count)
             guard let png = rep.representation(using: .png, properties: [:]) else { fail("png encode") }
-            let path = "\(outDir)/native-\(cfg.scene)-\(AuroraScene.all[cfg.scene].name.replacingOccurrences(of: " ", with: "")).png"
+            let path = "\(outDir)/native-\(cfg.scene)-\((AuroraScene.all.first(where: { $0.shaderIndex == cfg.scene })?.name ?? "Scene\(cfg.scene)").replacingOccurrences(of: " ", with: "")).png"
             try? png.write(to: URL(fileURLWithPath: path))
             print("wrote \(path)")
         }

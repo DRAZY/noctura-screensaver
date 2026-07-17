@@ -6,7 +6,7 @@ Tauri, no runtime to install — D3D11 ships with every supported Windows. The
 resulting `.scr` is ~200 KB and starts instantly.
 
 This is the Windows counterpart to `../native-saver` (macOS Metal). The two are
-kept at **full parity**: same 18 scenes, same 13 palettes, same control ranges,
+kept at **full parity**: same curated 11 scenes, same 13 palettes, same control ranges,
 ported from one canonical shader.
 
 ## Why Direct3D 11 + runtime HLSL

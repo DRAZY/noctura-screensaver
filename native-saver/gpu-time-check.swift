@@ -46,7 +46,8 @@ struct GPUTimeCheck {
         var anyNonzero = false
         var worst = 0.0
 
-        for sceneIndex in 0..<AuroraScene.all.count {
+        for scene in AuroraScene.all {
+            let sceneIndex = scene.shaderIndex
             var u = AuroraUniforms()
             u.scene = Float(sceneIndex)
             u.time = 9.0
@@ -85,7 +86,7 @@ struct GPUTimeCheck {
             if best > 0 { anyNonzero = true }
             worst = max(worst, best)
             let pct = best / frameBudget60 * 100
-            let name = AuroraScene.all[sceneIndex].name
+            let name = scene.name
             print(String(format: "  scene %2d  %-18@  %.3f ms  (%.0f%% of 60fps budget)",
                          sceneIndex, name as NSString, best * 1000, pct))
         }

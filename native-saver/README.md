@@ -16,20 +16,18 @@ runtime** via `MTLDevice.makeLibrary(source:)`. This is deliberate: the offline
 Tools. Runtime compilation needs neither, so the whole bundle builds with just
 `swiftc`. `Sources/AuroraShader.swift` is a faithful port of the WebGL gallery
 and is kept **at full parity with the Tauri app**: a single fragment entry point
-branches on `u.scene` to render the **18 scenes** in the same gallery order,
-across the same **13 color themes**. Two scenes go beyond the single-fragment
+branches on `u.scene` to render the curated **11 scenes** (stable internal
+dispatch indices — curation happens at the selection layer), across the same
+**13 color themes**. Two scenes go beyond the single-fragment
 architecture: **Flux Drift** (`Sources/AuroraFluxFluid.swift`) runs the real
 multi-pass Stam fluid simulation + per-line spring state ported from
 sandydoo/Flux, and **Particle Swarm** (`Sources/AuroraParticleSwarm.swift`)
 renders a true 60k-point cloud — both dispatched from `AuroraRenderer` with a
-per-pixel fallback if the pipeline can't build. Matrix Rain uses an encoded 5×7
-katakana bitmap font, rendered fine and `fwidth`-anti-aliased and scaled by a new
-**Size** control (which also drives Fireflies and Caustics); Caustics traces the
+per-pixel fallback if the pipeline can't build. Caustics traces the
 F2−F1 Worley border network for true thin light filaments; Northern Lights uses
-nimitz-style triangle-noise curtains;
-Black Hole and Tunnel sample angular noise on a circle (cos/sin) so there is no
-`atan` branch-cut seam; and the final color is dithered to remove 8-bit
-banding — identical to the web build.
+nimitz-style triangle-noise curtains; Black Hole samples angular noise on a
+circle (cos/sin) so there is no `atan` branch-cut seam; and the final color is
+dithered to remove 8-bit banding — identical to the web build.
 
 ## Build
 
@@ -70,12 +68,12 @@ Matches what mature screensavers expose, persisted via `ScreenSaverDefaults`:
 
 | Control     | Range / values                                                    |
 |-------------|-------------------------------------------------------------------|
-| Scene       | Any of the 13 gallery scenes                                      |
+| Scene       | Any of the 11 curated gallery scenes                              |
 | Style       | 13 palettes (Aurora · Borealis · Ocean · Synthwave · Monochrome…) |
 | Speed       | 0.03 – 1.2 (flow rate)                                            |
 | Intensity   | 0.0 – 1.5 (brightness / contrast lift)                            |
 | Density     | 0.0 – 1.0 (element count / fill)                                  |
-| Size        | 0.4 – 2.2 (element scale — Matrix glyphs, Fireflies, Caustics)    |
+| Size        | 0.4 – 2.2 (element scale — Fireflies, Caustics, stroke size)      |
 | Performance | **Auto (adaptive)** · Full (60 fps, native) · Balanced (60 fps, 1.5×) · Power Saver (30 fps, 1×) |
 
 **Performance** is the GPU-headroom control, and it's why this saver runs the

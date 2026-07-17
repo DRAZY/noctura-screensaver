@@ -1,7 +1,7 @@
 //! Persisted settings shared between the live saver, the preview pane, and the
 //! config dialog. Mirrors the macOS `AuroraPreferences` (Preferences.swift):
-//! same 18 scenes, same 13 palettes, same control ranges and defaults. Stored in
-//! the Windows registry under HKEY_CURRENT_USER\Software\Noctura.
+//! same curated 11 scenes, same 13 palettes, same control ranges and defaults.
+//! Stored in the Windows registry under HKEY_CURRENT_USER\Software\Noctura.
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::ERROR_SUCCESS;
@@ -10,13 +10,21 @@ use windows::Win32::System::Registry::{
     KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
 };
 
-/// 17 scenes, in the shader's `u.scene` dispatch order.
-pub const SCENES: [&str; 18] = [
-    "Aurora Drift", "Northern Lights", "Deep Space", "Particle Drift", "Plasma Field",
-    "Matrix Rain", "Fireflies", "Black Hole", "Hyperspace Tunnel", "Synthwave",
-    "Kaleidoscope", "Caustics", "Polar Clock", "Liquid Chrome", "Nebula Drift",
-    "Fractal Bloom", "Flux Drift", "Particle Swarm",
+/// The curated scene lineup (2026-07: 18 -> 11 keepers). `SCENE_IDS[i]` is the
+/// STABLE internal `u.scene` dispatch index for `SCENES[i]` — persisted settings
+/// and the shader branches keep using internal ids, so saved scenes survive
+/// curation and all 13 color Styles remain wired to every scene.
+pub const SCENES: [&str; 11] = [
+    "Northern Lights", "Deep Space", "Particle Drift", "Plasma Field", "Fireflies",
+    "Black Hole", "Caustics", "Nebula Drift", "Fractal Bloom", "Flux Drift",
+    "Particle Swarm",
 ];
+pub const SCENE_IDS: [usize; 11] = [1, 2, 3, 4, 6, 7, 11, 14, 15, 16, 17];
+
+/// List position of a stored internal scene id, or None if that scene was removed.
+pub fn scene_position(id: usize) -> Option<usize> {
+    SCENE_IDS.iter().position(|&x| x == id)
+}
 
 /// A three-stop color palette the scenes blend between.
 pub struct Palette {
@@ -87,7 +95,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            scene: 0, palette: 0, speed: 0.3, intensity: 1.0,
+            scene: SCENE_IDS[0], palette: 0, speed: 0.3, intensity: 1.0,
             density: 0.5, size: 0.85, performance: 0,
             clock_mode: 0, clock_font: 1, clock_pos: 2, clock_24h: false,
         }
@@ -106,7 +114,14 @@ impl Settings {
     /// keys are trivially inspectable in regedit.
     pub fn load() -> Settings {
         let mut s = Settings::default();
-        if let Some(v) = read_str("sceneIndex") { if let Ok(n) = v.parse::<i64>() { s.scene = clampi(n, 0, SCENES.len() as i64 - 1) as usize; } }
+        // sceneIndex stores the INTERNAL shader id (stable across curation). A
+        // stored id whose scene was removed falls back to the default.
+        if let Some(v) = read_str("sceneIndex") {
+            if let Ok(n) = v.parse::<i64>() {
+                let id = n.max(0) as usize;
+                s.scene = if scene_position(id).is_some() { id } else { SCENE_IDS[0] };
+            }
+        }
         if let Some(v) = read_str("paletteIndex") { if let Ok(n) = v.parse::<i64>() { s.palette = clampi(n, 0, 12) as usize; } }
         if let Some(v) = read_str("performanceIndex") { if let Ok(n) = v.parse::<i64>() { s.performance = clampi(n, 0, 3) as usize; } }
         if let Some(v) = read_str("speed") { if let Ok(f) = v.parse::<f32>() { s.speed = clampf(f, SPEED_RANGE); } }

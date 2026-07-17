@@ -17,23 +17,21 @@ Tauri + React + TypeScript + Three.js/WebGL. Ships in three forms:
 | Scene | Look | Reference |
 |-------|------|-----------|
 | **Flux Drift** | Real fluid-sim blades combed around living vortices | Faithful port of [Flux](https://github.com/sandydoo/flux) (macOS Drift) |
-| Aurora Drift | Domain-warped flowing color fields | Aeon / Drift |
 | Northern Lights | Swaying translucent aurora curtains | macOS XDR / Aerial |
-| Nebula Drift | Slow volumetric nebula clouds | Deep-sky photography |
-| Fractal Bloom | Unfolding kaleidoscopic fractal petals | Fractal art |
-| Liquid Chrome | Molten reflective metal waves | T2 / chrome |
 | Deep Space | Parallax stars + drifting nebula | Aerial Deep Space |
 | Particle Drift | Luminous curl-noise particle flow | Drift |
-| Particle Swarm | 60k-point 3D murmuration | Starling flocks |
 | Plasma Field | Liquid demoscene color waves | Plasma |
-| Matrix Rain | Cascading digital glyph rain | The Matrix |
 | Fireflies | Drifting glowing swarm in the dark | Ambient |
 | Black Hole | Swirling accretion disk + photon ring | Interstellar |
-| Hyperspace Tunnel | Endless light tunnel with speed-streaks | Hyperspace |
-| Synthwave | Neon outrun grid + banded retro sun | Outrun / 80s |
-| Kaleidoscope | Living mirrored color mandala | Kaleidoscope |
 | Caustics | Rippling pool-light webs over deep water | Sunlit water |
-| Polar Clock | Concentric live time arcs | Polar Clock |
+| Nebula Drift | Slow volumetric nebula clouds | Deep-sky photography |
+| Fractal Bloom | Unfolding kaleidoscopic fractal petals | Fractal art |
+| Particle Swarm | 60k-point 3D murmuration | Starling flocks |
+
+The lineup was curated in 2026-07 from 18 scenes down to these 11 keepers.
+Internally, scene dispatch indices are STABLE (the shader keeps its historical
+branch order); curation happens at the selection layer, so persisted scene
+choices survive and every scene keeps all 13 color Styles.
 
 **Flux Drift** is not a fragment-shader effect like the others — it's a faithful
 multi-pass port of the Flux source, identical on all three renderers: a 128²
@@ -49,15 +47,14 @@ with side-by-side captures and motion-decorrelation measurement
 (`scripts/capture-drift.ts` — real-clock captures; Chrome's virtual-time mode
 starves real-time simulations and must not be used to verify this scene).
 
-Matrix Rain uses a real encoded 5×7 katakana bitmap font, rendered fine and small
-with a **Glyph Size** control; Caustics traces the F2−F1 Worley border network for
-true thin light filaments; Northern Lights uses nimitz-style triangle-noise
-curtains; Kaleidoscope, Caustics, Polar Clock, Synthwave and the grid lines use
-`fwidth` anti-aliasing for resolution-independent crispness with no tearing.
+Caustics traces the F2−F1 Worley border network for true thin light filaments;
+Northern Lights uses nimitz-style triangle-noise curtains; Caustics and the
+other pattern scenes use `fwidth` anti-aliasing for resolution-independent
+crispness with no tearing.
 
 Every scene exposes live-tunable parameters (speed, color theme, density, **size**, …)
 that the settings UI renders automatically from each scene's declared `parameters`.
-Matrix Rain, Fireflies, Particle Drift and Caustics add a **Size** control to scale
+Fireflies, Particle Drift and Caustics add a **Size** control to scale
 their elements. An **About** card in the settings panel credits the creator.
 
 ## Playback & overlays
