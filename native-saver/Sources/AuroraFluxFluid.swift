@@ -53,8 +53,8 @@ final class AuroraFluxFluid {
         var colorMode: UInt32 = 0                        // 0 = Original, 1 = wheel
         var cols: UInt32 = 1
         var rows: UInt32 = 1
-        var pad0: UInt32 = 0
-        var pad1: UInt32 = 0
+        var noiseOffset2: Float = 0
+        var noiseBlend: Float = 0
         var wheel: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) =
             (.init(1, 1, 1, 1), .init(1, 1, 1, 1), .init(1, 1, 1, 1), .init(1, 1, 1, 1), .init(1, 1, 1, 1), .init(1, 1, 1, 1))
     }
@@ -331,6 +331,8 @@ final class AuroraFluxFluid {
             lineNoiseBlendFactor = 0
         }
         lineParams.noiseOffset1 = lineNoiseOffset1
+        lineParams.noiseOffset2 = lineNoiseOffset2
+        lineParams.noiseBlend = lineNoiseBlendFactor
     }
 
     /// Clear a texture to zero via an empty clear-load render pass.
@@ -451,7 +453,7 @@ extension AuroraFluxFluid {
         float noiseOffset1; float aspect; float zoom;
         float lineLength; float lineWidth; float beginOffset;
         float lineVariance; float deltaTime; float glow;
-        uint colorMode; uint cols; uint rows; uint pad0; uint pad1;
+        uint colorMode; uint cols; uint rows; float noiseOffset2; float noiseBlend;
         float4 wheel[6];
     };
 
@@ -622,7 +624,13 @@ extension AuroraFluxFluid {
         float4 cw = uState1.read(tc);
         float4 cv = uState2.read(tc);
 
+        // Crossfade between two noise offsets (Flux): without the blend, the
+        // periodic offset swap pops every line's variance at once.
         float noise = snoise(float3(p.lineNoiseScale * basepoint, p.noiseOffset1));
+        if (p.noiseBlend > 0.0) {
+            float noise2 = snoise(float3(p.lineNoiseScale * basepoint, p.noiseOffset2));
+            noise = mix(noise, noise2, p.noiseBlend);
+        }
         float variance = mix(1.0 - p.lineVariance, 1.0, 0.5 + 0.5 * noise);
         float velocityDeltaBoost = mix(3.0, 25.0, 1.0 - variance);
         float momentumBoost = mix(3.0, 5.0, variance);

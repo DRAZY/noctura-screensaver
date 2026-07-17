@@ -35,6 +35,7 @@ cbuffer LineParams : register(b2)
     float4 gridB;   // lineNoiseScale.x, lineNoiseScale.y, noiseOffset1, aspect
     float4 lineA;   // zoom, lineLength, lineWidth, beginOffset
     float4 lineB;   // lineVariance, deltaTime(line), glow, colorMode (0/1 as float)
+    float4 gridC;   // noiseOffset2, noiseBlend, unused, unused
     float4 wheel[6];
 };
 
@@ -257,7 +258,14 @@ PlaceOut place_frag(FSOut fsIn)
     float dtLine = lineB.y;
     float lineLength = lineA.y;
 
+    // Crossfade between two noise offsets (Flux): without the blend, the
+    // periodic offset swap pops every line's variance at once.
     float n = snoise(float3(gridB.xy * basepoint, gridB.z));
+    if (gridC.y > 0.0)
+    {
+        float n2 = snoise(float3(gridB.xy * basepoint, gridC.x));
+        n = lerp(n, n2, gridC.y);
+    }
     float variance = lerp(1.0 - lineVariance, 1.0, 0.5 + 0.5 * n);
     float velocityDeltaBoost = lerp(3.0, 25.0, 1.0 - variance);
     float momentumBoost = lerp(3.0, 5.0, variance);

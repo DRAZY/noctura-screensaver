@@ -104,6 +104,8 @@ uniform float uLineLength;     // view_scale * line_length * line_scale_factor
 uniform float uLineVariance;   // 0.45
 uniform vec2  uLineNoiseScale; // 64 * scaling_ratio
 uniform float uLineNoiseOffset1;
+uniform float uLineNoiseOffset2;
+uniform float uLineNoiseBlend;
 uniform float uDeltaTime;      // RAW frame delta (Flux: line animation uses frame dt)
 uniform int   uColorMode;      // 0 = Original (velocity→RGB), 1 = color wheel
 uniform vec3  uWheel[6];
@@ -128,7 +130,14 @@ void main() {
 
   // Per-line variance from smooth spatial noise (NOT a hash — neighbouring lines
   // share variance, which makes whole neighbourhoods lag/lead together).
+  // Crossfade between two noise offsets (Flux): the offset grows until float
+  // precision would degrade the simplex lattice, then blends to a fresh offset
+  // and swaps — without the blend the swap pops every line's variance at once.
   float noise = snoise(vec3(uLineNoiseScale * basepoint, uLineNoiseOffset1));
+  if (uLineNoiseBlend > 0.0) {
+    float noise2 = snoise(vec3(uLineNoiseScale * basepoint, uLineNoiseOffset2));
+    noise = mix(noise, noise2, uLineNoiseBlend);
+  }
   float variance = mix(1.0 - uLineVariance, 1.0, 0.5 + 0.5 * noise);
   float velocityDeltaBoost = mix(3.0, 25.0, 1.0 - variance);
   float momentumBoost = mix(3.0, 5.0, variance);
@@ -432,6 +441,8 @@ export class Drift implements Scene {
         uLineVariance: { value: 0.55 },
         uLineNoiseScale: { value: new THREE.Vector2(64, 64) },
         uLineNoiseOffset1: { value: 0 },
+        uLineNoiseOffset2: { value: 0 },
+        uLineNoiseBlend: { value: 0 },
         uDeltaTime: { value: 0 },
         uColorMode: { value: 0 },
         uWheel: { value: [...Array(6)].map(() => new THREE.Vector3(1, 1, 1)) },
@@ -681,6 +692,8 @@ export class Drift implements Scene {
     const pu = this.placeMat.uniforms;
     pu.uDeltaTime.value = dt;
     pu.uLineNoiseOffset1.value = this.lineNoiseOffset1;
+    pu.uLineNoiseOffset2.value = this.lineNoiseOffset2;
+    pu.uLineNoiseBlend.value = this.lineNoiseBlendFactor;
     pu.uVelocity.value = this.fluid.velocityTexture;
     pu.uState0.value = this.stateA.textures[0];
     pu.uState1.value = this.stateA.textures[1];

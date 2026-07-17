@@ -99,10 +99,11 @@ struct LineParams {
     grid_b: [f32; 4],
     line_a: [f32; 4],
     line_b: [f32; 4],
+    grid_c: [f32; 4], // noiseOffset2, noiseBlend, unused, unused
     wheel: [[f32; 4]; 6],
 }
 
-const _: () = assert!(std::mem::size_of::<LineParams>() == 160);
+const _: () = assert!(std::mem::size_of::<LineParams>() == 176);
 
 /// One line-spring grid: MRT state ping-pong ([0] endpoint+springVel,
 /// [1] color+width, [2] colorVel+opacity) plus its own line-animation clock.
@@ -461,6 +462,7 @@ impl FluxFluid {
                         grid_b: [64.0, 64.0, 0.0, 1.0],
                         line_a: [ZOOM, 0.0, 0.0, 0.4],
                         line_b: [0.55, 1.0 / 60.0, 1.0, 0.0],
+                        grid_c: [0.0; 4],
                         wheel: [[1.0; 4]; 6],
                     },
                     channels: [
@@ -701,6 +703,8 @@ impl FluxFluid {
             self.line_noise_blend = 0.0;
         }
         self.line.grid_b[2] = self.line_noise_offset1;
+        self.line.grid_c[0] = self.line_noise_offset2;
+        self.line.grid_c[1] = self.line_noise_blend;
     }
 
     /// place_lines: fullscreen MRT pass over one grid's 3 state textures (raw
