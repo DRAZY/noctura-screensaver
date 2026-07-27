@@ -62,7 +62,7 @@ jobs:
         shell: pwsh
         run: |
           $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
-          & "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" /DAppVersion=$v packaging\noctura.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=$v packaging\noctura.iss
       - name: Upload installer + .scr artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -98,7 +98,7 @@ jobs:
       - name: Build Noctura.pkg (installer with orphan cleanup)
         run: |
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
-          ./native-saver/packaging/build-pkg.sh "$VERSION" native-saver/build
+          ./native-saver/packaging/build-pkg.sh "$VERSION" "$PWD/native-saver/build"
       - name: Upload .saver + .pkg artifacts
         uses: actions/upload-artifact@v4
         with:
