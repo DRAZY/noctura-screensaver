@@ -425,6 +425,20 @@ fn run_saver() -> windows::core::Result<()> {
     let mut last = Instant::now();
     let mut last_power = Instant::now();
     let mut msg = MSG::default();
+
+    // Auto-mode adaptive resolution (parity with the macOS/web governors).
+    // Signal: per-iteration WORK time — when the GPU can't keep up, Present's
+    // vsync backpressure inflates it well past the frame budget. Sustained
+    // overrun drops the render scale (cost ~ scale²); a long comfortable
+    // stretch climbs back toward the profile/battery ceiling.
+    let is_auto = perf.is_auto;
+    let mut adaptive_scale: f32 = scale;
+    let mut smoothed_ms: f32 = 0.0;
+    let mut frames_since_adapt: u32 = 0;
+    let mut slow_streak: u32 = 0;
+    let mut stable_streak: u32 = 0;
+    const ADAPT_MIN_SCALE: f32 = 0.5;
+
     'outer: loop {
         unsafe {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
@@ -450,6 +464,12 @@ fn run_saver() -> windows::core::Result<()> {
                 target_frame = nf;
                 if (ns - scale).abs() > f32::EPSILON {
                     scale = ns;
+                    // Re-seed the governor inside the new ceiling.
+                    adaptive_scale = ns;
+                    smoothed_ms = 0.0;
+                    frames_since_adapt = 0;
+                    slow_streak = 0;
+                    stable_streak = 0;
                     surfaces = build_surfaces(&gfx, &windows_hw, scale, max_edge);
                 }
                 log::line(&format!(
@@ -476,6 +496,47 @@ fn run_saver() -> windows::core::Result<()> {
         }
         // Frame pacing (PowerSaver caps at 30 fps; others ride vsync at 60).
         let elapsed = last.elapsed();
+
+        // Adaptive governor (Auto profile only).
+        if is_auto {
+            let ms = elapsed.as_secs_f32() * 1000.0;
+            let budget = target_frame.as_secs_f32() * 1000.0;
+            smoothed_ms = if smoothed_ms == 0.0 { ms } else { smoothed_ms * 0.9 + ms * 0.1 };
+            frames_since_adapt += 1;
+            if smoothed_ms > budget * 1.35 {
+                slow_streak += 1;
+                stable_streak = 0;
+            } else if smoothed_ms < budget * 1.05 {
+                stable_streak += 1;
+                slow_streak = 0;
+            } else {
+                slow_streak = 0;
+                stable_streak = 0;
+            }
+            // Evaluate a few times a second; ~0.5 s of overrun steps down,
+            // ~5 s of comfort probes back up toward the ceiling.
+            if frames_since_adapt >= 60 {
+                let ceiling = scale;
+                let mut next = adaptive_scale;
+                if slow_streak >= 30 {
+                    next = (adaptive_scale * 0.8).max(ADAPT_MIN_SCALE);
+                } else if stable_streak >= 300 && adaptive_scale < ceiling - 0.001 {
+                    next = (adaptive_scale * 1.15).min(ceiling);
+                }
+                if (next - adaptive_scale).abs() > 0.001 {
+                    adaptive_scale = next;
+                    surfaces = build_surfaces(&gfx, &windows_hw, adaptive_scale, max_edge);
+                    log::line(&format!(
+                        "auto: render scale -> {adaptive_scale:.2} (frame {smoothed_ms:.1} ms / budget {budget:.1} ms)"
+                    ));
+                    smoothed_ms = 0.0;
+                }
+                frames_since_adapt = 0;
+                slow_streak = 0;
+                stable_streak = 0;
+            }
+        }
+
         if elapsed < target_frame {
             std::thread::sleep(target_frame - elapsed);
         }

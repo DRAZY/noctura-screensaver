@@ -36,8 +36,9 @@ use windows::Win32::Graphics::Direct3D::{
 };
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_FLOAT,
-    DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_MODE_DESC,
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16_FLOAT,
+    DXGI_FORMAT_R16_FLOAT,
+    DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_MODE_DESC,
     DXGI_RATIONAL, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
@@ -304,17 +305,15 @@ impl FluxFluid {
                 crate::log::line(&format!("flux: format {name}: render_target={rt} shader_sample={samp}"));
                 (rt, samp)
             };
-            let (_, rg_linear) = probe(DXGI_FORMAT_R32G32_FLOAT, "R32G32_FLOAT");
-            probe(DXGI_FORMAT_R32_FLOAT, "R32_FLOAT");
+            let (_, rg_linear) = probe(DXGI_FORMAT_R16G16_FLOAT, "R16G16_FLOAT");
+            probe(DXGI_FORMAT_R16_FLOAT, "R16_FLOAT");
             probe(DXGI_FORMAT_R32G32B32A32_FLOAT, "R32G32B32A32_FLOAT");
-            // Linear filtering of 32-bit float is OPTIONAL in D3D11; sampling a float
-            // texture with a linear sampler on a GPU that lacks it yields garbage/NaN
-            // (the web build makes the same nearest fallback). Pick the filter to
-            // match the hardware so the sim is correct everywhere.
+            // 16F linear filtering is REQUIRED at FL10+, so this fallback should
+            // never fire — kept as a belt-and-braces guard for broken drivers.
             let sampler_filter = if rg_linear {
                 D3D11_FILTER_MIN_MAG_MIP_LINEAR
             } else {
-                crate::log::line("flux: float-linear unsupported — using point sampling");
+                crate::log::line("flux: 16F-linear unsupported — using point sampling");
                 D3D11_FILTER_MIN_MAG_MIP_POINT
             };
 
@@ -363,15 +362,18 @@ impl FluxFluid {
 
                 let mktex = |w, h, fmt, label: &str| Tex::make(device, w, h, fmt)
                     .map_err(|e| { crate::log::line(&format!("flux: texture '{label}' create failed")); e });
-                let vel_a = mktex(FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT, "vel_a")?;
-                let vel_b = mktex(FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT, "vel_b")?;
+                // 16-bit float fluid (Flux reference parity): half the bandwidth,
+                // and D3D11 REQUIRES linear filtering support for 16F formats at
+                // FL10+ (32F filtering is optional hardware) — strictly better.
+                let vel_a = mktex(FLUID, FLUID, DXGI_FORMAT_R16G16_FLOAT, "vel_a")?;
+                let vel_b = mktex(FLUID, FLUID, DXGI_FORMAT_R16G16_FLOAT, "vel_b")?;
                 // Noise texture is 2× the fluid size (Flux).
-                let noise_t = mktex(2 * FLUID, 2 * FLUID, DXGI_FORMAT_R32G32_FLOAT, "noise_t")?;
-                let fwd_t = mktex(FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT, "fwd_t")?;
-                let rev_t = mktex(FLUID, FLUID, DXGI_FORMAT_R32G32_FLOAT, "rev_t")?;
-                let prs_a = mktex(FLUID, FLUID, DXGI_FORMAT_R32_FLOAT, "prs_a")?;
-                let prs_b = mktex(FLUID, FLUID, DXGI_FORMAT_R32_FLOAT, "prs_b")?;
-                let div_t = mktex(FLUID, FLUID, DXGI_FORMAT_R32_FLOAT, "div_t")?;
+                let noise_t = mktex(2 * FLUID, 2 * FLUID, DXGI_FORMAT_R16G16_FLOAT, "noise_t")?;
+                let fwd_t = mktex(FLUID, FLUID, DXGI_FORMAT_R16G16_FLOAT, "fwd_t")?;
+                let rev_t = mktex(FLUID, FLUID, DXGI_FORMAT_R16G16_FLOAT, "rev_t")?;
+                let prs_a = mktex(FLUID, FLUID, DXGI_FORMAT_R16_FLOAT, "prs_a")?;
+                let prs_b = mktex(FLUID, FLUID, DXGI_FORMAT_R16_FLOAT, "prs_b")?;
+                let div_t = mktex(FLUID, FLUID, DXGI_FORMAT_R16_FLOAT, "div_t")?;
                 crate::log::line("flux: all fluid textures created ok");
 
                 let sampler_desc = D3D11_SAMPLER_DESC {

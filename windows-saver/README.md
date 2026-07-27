@@ -39,7 +39,7 @@ as macOS. A hard 5120 px longest-edge backstop protects 6K/8K/spanned displays.
 
 | Mode        | Render scale | Frame rate |
 |-------------|--------------|------------|
-| Auto        | native (adaptive hook reserved) | 60 |
+| Auto        | adaptive (frame-time governor, 0.5–1.0×) | 60 |
 | Full        | native       | 60 |
 | Balanced    | 1 / 1.5      | 60 |
 | Power Saver | 1 / 2        | 30 |
@@ -83,5 +83,6 @@ cargo build --release --target x86_64-pc-windows-msvc
   SmartScreen stays quiet.
 - Visual output can only be confirmed on Windows; the macOS-side gate is a full
   `cargo check`/`cargo xwin build` against the real Win32 API.
-- `Auto` performance currently pins native resolution; the measured-GPU-time
-  adaptive controller (as on macOS) is the reserved next step.
+- `Auto` performance adapts render resolution from measured frame time
+  (sustained overrun steps down; sustained comfort climbs back), the same
+  strategy as the macOS/web governors.

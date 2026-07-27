@@ -127,7 +127,9 @@ final class AuroraFluxFluid {
                 d.colorAttachments[0].pixelFormat = fmt
                 return try device.makeRenderPipelineState(descriptor: d)
             }
-            let rg = MTLPixelFormat.rg32Float, r = MTLPixelFormat.r32Float
+            // 16-bit float fluid (matches the Flux reference's RG16F): half the
+            // bandwidth of 32F across the sim's ~29 passes per step.
+            let rg = MTLPixelFormat.rg16Float, r = MTLPixelFormat.r16Float
             pNoise = try frag("noise_frag", rg)
             pAdvect = try frag("advect_frag", rg)
             pAdjust = try frag("adjust_frag", rg)
@@ -184,10 +186,10 @@ final class AuroraFluxFluid {
 
     private func makeFluidTextures() -> Bool {
         let n = AuroraFluxFluid.FLUID
-        guard let a = tex(n, n, .rg32Float), let b = tex(n, n, .rg32Float),
-              let pa = tex(n, n, .r32Float), let pb = tex(n, n, .r32Float),
-              let dv = tex(n, n, .r32Float), let no = tex(2 * n, 2 * n, .rg32Float), // noise = 2× fluid (Flux)
-              let fw = tex(n, n, .rg32Float), let rv = tex(n, n, .rg32Float) else { return false }
+        guard let a = tex(n, n, .rg16Float), let b = tex(n, n, .rg16Float),
+              let pa = tex(n, n, .r16Float), let pb = tex(n, n, .r16Float),
+              let dv = tex(n, n, .r16Float), let no = tex(2 * n, 2 * n, .rg16Float), // noise = 2× fluid (Flux)
+              let fw = tex(n, n, .rg16Float), let rv = tex(n, n, .rg16Float) else { return false }
         velA = a; velB = b; prsA = pa; prsB = pb; divT = dv; noiseT = no; fwdT = fw; revT = rv
         return true
     }

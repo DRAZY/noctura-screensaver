@@ -236,8 +236,11 @@ void main(){
 `;
 
 function makeRT(size: number, filter: THREE.MagnificationTextureFilter): THREE.WebGLRenderTarget {
+  // Half-float (RG16F-class) like the Flux reference: half the bandwidth of
+  // 32F across the ~29 passes/step, and WebGL2 supports LINEAR filtering of
+  // 16F in core (32F filtering needs an extension) — strictly better here.
   const rt = new THREE.WebGLRenderTarget(size, size, {
-    type: THREE.FloatType,
+    type: THREE.HalfFloatType,
     format: THREE.RGBAFormat,
     minFilter: filter,
     magFilter: filter,
@@ -329,13 +332,10 @@ export class FluxFluid {
     new NoiseChannel(30.0, 0.5, 0.001 * 12.0),
   ];
 
-  constructor(renderer: THREE.WebGLRenderer, size = 128) {
+  constructor(_renderer: THREE.WebGLRenderer, size = 128) {
     this.size = size;
-    // Float-texture LINEAR filtering needs OES_texture_float_linear; fall back to
-    // NEAREST if the driver lacks it (sim still runs, slightly blockier sampling).
-    const linear = renderer.extensions.get("OES_texture_float_linear")
-      ? THREE.LinearFilter
-      : THREE.NearestFilter;
+    // Half-float linear filtering is core WebGL2 — no extension gamble.
+    const linear = THREE.LinearFilter;
 
     this.velA = makeRT(size, linear);
     this.velB = makeRT(size, linear);
