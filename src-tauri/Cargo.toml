@@ -1,6 +1,6 @@
 [package]
 name = "noctura"
-version = "0.6.0"
+version = "0.7.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -22,4 +22,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-dialog = "2.7.2"
+tauri-plugin-process = "2.3.1"
 

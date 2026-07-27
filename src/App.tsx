@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { SceneManager } from "./engine/SceneManager";
 import { defaultsFor, type ParameterValue, type Parameter, type Scene } from "./engine/types";
 import { registerAllScenes } from "./scenes";
+import { startUpdateCheck } from "./updater";
 import { watchPowerSource } from "./power/powerSource";
 import { SettingsPanel } from "./ui/SettingsPanel";
 import { ClockOverlay } from "./ui/ClockOverlay";
@@ -180,6 +181,7 @@ function App() {
     if (!canvas) return;
 
     const mgr = new SceneManager(canvas, { onFrame: setFps });
+    startUpdateCheck();
     managerRef.current = mgr;
     registerAllScenes(mgr);
     mgr.resize(window.innerWidth, window.innerHeight);

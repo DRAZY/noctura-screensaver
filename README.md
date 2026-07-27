@@ -14,10 +14,11 @@ Grab the latest build from the [**Releases**](../../releases/latest) page.
 
 | Platform | File | Notes |
 |---|---|---|
-| **macOS** (Apple Silicon) | `Noctura_<ver>_aarch64.dmg` | Smallest; M-series Macs |
-| **macOS** (Intel + Apple Silicon) | `Noctura_<ver>_universal.dmg` | Works on any Mac |
-| **macOS screensaver** | `Noctura.saver.zip` | Includes `Install-Noctura.command` / `Uninstall-Noctura.command` |
-| **Windows** (x64 + ARM64) | `Noctura-Windows.zip` | Includes `Install-Noctura.bat` / `Uninstall-Noctura.bat`; installer auto-detects your CPU |
+| **Windows** (x64 + ARM64) | `NocturaSetup.exe` | Real install wizard — auto-detects your CPU, registers in Apps & features, upgrades replace old versions |
+| **macOS screensaver** | `Noctura-<ver>.pkg` | Native installer — installs for all users and cleans up old copies automatically |
+| **macOS app** (Intel + Apple Silicon) | `Noctura_<ver>_universal.dmg` | Styled drag-to-Applications DMG; the app self-updates from GitHub Releases |
+| **macOS app** (Apple Silicon only) | `Noctura_<ver>_aarch64.dmg` | Smaller download for M-series Macs |
+| **Windows** (zip, advanced) | `Noctura-Windows.zip` | Raw `.scr` + install/uninstall scripts, if you prefer no installer |
 
 > Builds are unsigned (ad-hoc signed, no paid Developer ID), so the OS warns on first launch — you can still open them:
 > - **macOS:** drag Noctura to Applications, double-click, click **Done** on the warning, then **System Settings → Privacy & Security** → scroll to *"Noctura was blocked"* → **Open Anyway**. Guaranteed alternative: `xattr -dr com.apple.quarantine /Applications/Noctura.app`.
