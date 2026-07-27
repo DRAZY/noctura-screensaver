@@ -51,6 +51,8 @@ swiftc -O \
 
 echo "==> [3/3] Assembling bundle"
 cp "$DIR/Info.plist" "$SAVER/Contents/Info.plist"
+mkdir -p "$SAVER/Contents/Resources"
+cp "$DIR/../src-tauri/icons/icon.icns" "$SAVER/Contents/Resources/Noctura.icns"
 # Mach-O type check: the executable must be loadable by the screensaver host.
 file "$SAVER/Contents/MacOS/Noctura"
 
