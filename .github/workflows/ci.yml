@@ -52,13 +52,25 @@ jobs:
         run: cargo build --release --target aarch64-pc-windows-msvc
       - name: Shader compile tests (real D3DCompile, sm_4_0 + sm_5_0)
         run: cargo test --release --target x86_64-pc-windows-msvc -- --nocapture
-      - name: Upload .scr artifacts
+      - name: Stage .scr binaries for the installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist\windows | Out-Null
+          Copy-Item target\x86_64-pc-windows-msvc\release\noctura.exe dist\windows\Noctura-x64.scr
+          Copy-Item target\aarch64-pc-windows-msvc\release\noctura.exe dist\windows\Noctura-arm64.scr
+      - name: Build NocturaSetup.exe (Inno Setup)
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          & "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" /DAppVersion=$v packaging\noctura.iss
+      - name: Upload installer + .scr artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: noctura-windows-scr
+          name: noctura-windows
           path: |
-            windows-saver/target/x86_64-pc-windows-msvc/release/noctura.exe
-            windows-saver/target/aarch64-pc-windows-msvc/release/noctura.exe
+            windows-saver/packaging/Output/NocturaSetup.exe
+            windows-saver/dist/windows/Noctura-x64.scr
+            windows-saver/dist/windows/Noctura-arm64.scr
           if-no-files-found: error
 
   macos:
@@ -83,9 +95,15 @@ jobs:
         run: cargo check --manifest-path src-tauri/Cargo.toml
       - name: Tauri backend tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
-      - name: Upload .saver artifact
+      - name: Build Noctura.pkg (installer with orphan cleanup)
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          ./native-saver/packaging/build-pkg.sh "$VERSION" native-saver/build
+      - name: Upload .saver + .pkg artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: noctura-macos-saver
-          path: native-saver/build/Noctura.saver
+          name: noctura-macos
+          path: |
+            native-saver/build/Noctura.saver
+            native-saver/build/*.pkg
           if-no-files-found: error

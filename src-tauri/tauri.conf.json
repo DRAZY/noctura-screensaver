@@ -37,7 +37,22 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "dmg": {
+        "background": "../assets/dmg-background.png",
+        "windowSize": {
+          "width": 660,
+          "height": 420
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 290
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 290
+        }
+      }
     }
   }
 }
