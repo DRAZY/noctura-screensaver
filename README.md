@@ -1,10 +1,24 @@
+<div align="center">
+
+<img src="assets/icon-master-1024.png" width="128" alt="Noctura icon">
+
 # Noctura
 
-**A cross-platform animated screensaver — 11 curated GPU-rendered scenes, 13 color palettes — for macOS and Windows.**
+**Living GPU art for your idle screen.**
+11 curated scenes · 13 color styles · macOS + Windows · free & open source
 
-Noctura runs the *same* scenes everywhere, three ways: a desktop gallery app, a native macOS `.saver`, and a native Windows `.scr`. Every scene is a real-time GPU fragment shader (WebGL on the web build, Metal on macOS, Direct3D 11 on Windows), kept at pixel-level parity across all three.
+[![Latest release](https://img.shields.io/github/v/release/DRAZY/noctura-screensaver?label=download&color=6d4aff)](../../releases/latest)
+[![CI](https://github.com/DRAZY/noctura-screensaver/actions/workflows/ci.yml/badge.svg)](../../actions)
+[![Downloads](https://img.shields.io/github/downloads/DRAZY/noctura-screensaver/total?color=2ea44f)](../../releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-![Flux Drift](screenshots/scenes/FluxDrift.png)
+<img src="screenshots/hero.gif" width="760" alt="Flux Drift — a real fluid simulation, live">
+
+*Flux Drift — thousands of luminous blades riding a real Navier–Stokes fluid simulation, live on your GPU.*
+
+</div>
+
+Noctura is a native screensaver for **macOS** (`.saver`) and **Windows** (`.scr`), plus a desktop gallery app — the *same* scenes everywhere, rendered by Metal, Direct3D 11, and WebGL at full parity. No Electron in your lock screen, no runtime to install, a few hundred kilobytes of native code. It adapts its resolution to your GPU, throttles itself on battery, and updates in place.
 
 ---
 
@@ -24,10 +38,11 @@ Grab the latest build from the [**Releases**](../../releases/latest) page.
 > - **macOS:** drag Noctura to Applications, double-click, click **Done** on the warning, then **System Settings → Privacy & Security** → scroll to *"Noctura was blocked"* → **Open Anyway**. Guaranteed alternative: `xattr -dr com.apple.quarantine /Applications/Noctura.app`.
 > - **Windows:** SmartScreen → **More info → Run anyway**.
 
-### Uninstall
-- **macOS app (DMG):** drag `Noctura.app` from Applications to the Trash.
-- **macOS screensaver:** run `Uninstall-Noctura.command` from the zip (removes the saver + its saved settings). Manual: delete `~/Library/Screen Savers/Noctura.saver`.
-- **Windows:** run `Uninstall-Noctura.bat` from the zip (self-elevates, removes `Noctura.scr`).
+### Updating & uninstalling
+- **Upgrades are clean by design:** `NocturaSetup.exe` and the `.pkg` replace any previous version (including removing orphaned copies), and the macOS app offers one-click self-updates from this repo's releases.
+- **Uninstall on Windows:** *Settings → Apps → Noctura → Uninstall*.
+- **Uninstall the macOS screensaver:** delete `/Library/Screen Savers/Noctura.saver` (or `~/Library/Screen Savers/Noctura.saver` for zip-era installs).
+- **Uninstall the macOS app:** drag `Noctura.app` from Applications to the Trash.
 
 ---
 
@@ -69,9 +84,9 @@ All three builds can overlay the **time** (or **time + date**) on top of the sce
 
 | Build | Tech | What it is |
 |---|---|---|
-| **Desktop app** | Tauri 2 · React · WebGL | A standalone window with the full gallery, slideshow, favorites, and clock overlay. |
+| **Desktop app** | Tauri 2 · React · WebGL | The full gallery: browse scenes, tune them live, slideshow, favorites, clock overlay — and signed in-place self-updates. |
 | **macOS `.saver`** | Swift · Metal | A true system screensaver in System Settings → Screen Saver. See [`native-saver/`](native-saver/). |
-| **Windows `.scr`** | Rust · Direct3D 11 | A true Windows screensaver (`/s` `/p` `/c`), ~200 KB, no runtime to install. See [`windows-saver/`](windows-saver/). |
+| **Windows `.scr`** | Rust · Direct3D 11 | A true Windows screensaver (`/s` `/p` `/c`) in a single ~400 KB binary, no runtime to install. See [`windows-saver/`](windows-saver/). |
 
 The macOS Metal shader and the Windows HLSL shader are faithful ports of the same canonical scene shader, sharing an identical uniform layout — so all three platforms render the same image. **Flux Drift** goes further: all three renderers run the same multi-pass architecture ported from the Flux source — a 128² Navier-Stokes solver stepped at a fixed 60 Hz, a per-line state pass carrying 12 floats of spring physics per blade (endpoint, velocity, color, color-velocity, width) in MRT float textures, an endpoint pass with Flux's blend-compensation trick, and linear-space accumulation with an sRGB encode — so the fluid look **and motion** match across web, macOS, and Windows (verified against the live reference with side-by-side captures and motion-decorrelation measurement).
 
