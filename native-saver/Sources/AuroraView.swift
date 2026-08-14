@@ -99,6 +99,10 @@ final class AuroraView: ScreenSaverView {
             metalLayer.device = renderer.device
             metalLayer.pixelFormat = .bgra8Unorm
             metalLayer.framebufferOnly = true
+            // 2 in-flight drawables (default 3): one being shown, one being drawn.
+            // A screensaver never needs triple-buffering headroom; this trims a
+            // full-screen surface of memory and a frame of latency at zero cost.
+            metalLayer.maximumDrawableCount = 2
             metalLayer.isOpaque = true
             layer?.addSublayer(metalLayer)
             renderer.apply(preferences: preferences)

@@ -28,11 +28,19 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
 use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+use windows::Win32::System::Power::{
+    GetSystemPowerStatus, RegisterPowerSettingNotification, POWERBROADCAST_SETTING,
+    SYSTEM_POWER_STATUS,
+};
+use windows::Win32::System::SystemServices::GUID_CONSOLE_DISPLAY_STATE;
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 static QUIT: AtomicBool = AtomicBool::new(false);
+/// False while the console display is powered off (system display-sleep timer).
+/// Windows does NOT stop a screensaver when the panel goes dark — without this
+/// gate the saver keeps rendering full-tilt into an invisible surface all night.
+static DISPLAY_ON: AtomicBool = AtomicBool::new(true);
 static IS_PREVIEW: AtomicBool = AtomicBool::new(false);
 /// Packed first mouse position (x in low 32, y in high 32); i64::MIN = unset.
 static MOUSE_BASE: AtomicI64 = AtomicI64::new(i64::MIN);
@@ -225,6 +233,11 @@ fn on_battery() -> bool {
     unsafe {
         let mut status = SYSTEM_POWER_STATUS::default();
         if GetSystemPowerStatus(&mut status).is_ok() {
+            // Windows Energy Saver engaged counts as power-save even before the
+            // AC check — honor the user's explicit efficiency request.
+            if status.SystemStatusFlag == 1 {
+                return true;
+            }
             status.ACLineStatus == 0
         } else {
             false
@@ -262,6 +275,17 @@ fn build_surfaces(gfx: &Gfx, wins: &[(HWND, i32, i32)], scale: f32, max_edge: u3
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        WM_POWERBROADCAST if wp.0 == PBT_POWERSETTINGCHANGE as usize && lp.0 != 0 => {
+            let s = &*(lp.0 as *const POWERBROADCAST_SETTING);
+            if s.PowerSetting == GUID_CONSOLE_DISPLAY_STATE {
+                // Data[0]: 0 = off, 1 = on, 2 = dimmed. Render only when visible.
+                let on = s.Data[0] != 0;
+                if on != DISPLAY_ON.swap(on, Ordering::Relaxed) {
+                    log::line(&format!("display state: {}", if on { "on" } else { "off — pausing render" }));
+                }
+            }
+            return LRESULT(1); // TRUE
+        }
         WM_MOUSEMOVE if !IS_PREVIEW.load(Ordering::Relaxed) => {
             // Compare in SCREEN coordinates: the message LPARAM is per-window
             // client space, so on multi-monitor a move on a second display would
@@ -417,6 +441,13 @@ fn run_saver() -> windows::core::Result<()> {
         if let Some(h) = first_hwnd {
             let _ = SetForegroundWindow(h);
             let _ = BringWindowToTop(h);
+            // Display-off notifications (DEVICE_NOTIFY_WINDOW_HANDLE = 0):
+            // pauses rendering while the panel sleeps.
+            let _ = RegisterPowerSettingNotification(
+                windows::Win32::Foundation::HANDLE(h.0),
+                &GUID_CONSOLE_DISPLAY_STATE,
+                windows::Win32::UI::WindowsAndMessaging::REGISTER_NOTIFICATION_FLAGS(0),
+            );
         }
         while ShowCursor(false) >= 0 {}
     }
@@ -478,6 +509,13 @@ fn run_saver() -> windows::core::Result<()> {
                 ));
             }
         }
+        // Panel asleep: render nothing, wake rarely, keep processing messages so
+        // input still dismisses the saver instantly when the display returns.
+        if !DISPLAY_ON.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(250));
+            last = Instant::now();
+            continue;
+        }
         let t = start.elapsed().as_secs_f32();
         let (ctime, cdate) = clock_strings(&settings);
         let clock = (settings.clock_mode != 0).then(|| ClockDraw {
@@ -486,9 +524,13 @@ fn run_saver() -> windows::core::Result<()> {
             font: settings.clock_font,
             pos: settings.clock_pos,
         });
-        for surf in &surfaces {
+        for (i, surf) in surfaces.iter().enumerate() {
             let u = build_uniforms(&settings, t, [surf.bb_w as f32, surf.bb_h as f32], surf.content_scale);
-            if !gfx.render(surf, &u, 1, clock.as_ref()) {
+            // Vsync-block on the FIRST monitor only. Present(1) on every swap
+            // chain serializes a full vblank wait per monitor, so two displays
+            // halved the frame rate and burned the saved time spinning.
+            let vsync = if i == 0 { 1 } else { 0 };
+            if !gfx.render(surf, &u, vsync, clock.as_ref()) {
                 // Device lost (TDR / driver reset). Don't sit on a frozen
                 // frame — end the saver so the desktop returns.
                 QUIT.store(true, Ordering::Relaxed);
