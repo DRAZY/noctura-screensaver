@@ -494,9 +494,21 @@ final class AuroraView: ScreenSaverView {
 
     override func stopAnimation() {
         super.stopAnimation()
+        // The legacyScreenSaver host is long-lived and leaky: it keeps this view
+        // alive long after dismissal. Release every heavyweight GPU resource
+        // (fluid sim textures, MRT line state, full-screen accumulator) so an
+        // idle host holds ~nothing; scenes lazily rebuild on the next start.
+        renderer?.releaseSceneResources()
+        lastFrameTime = 0
     }
 
     override func animateOneFrame() {
+        // The host can keep ticking this after dismissal (Sonoma keeps the appex
+        // alive) or while fully covered. Never render what nobody can see.
+        if let w = window, !w.isVisible || !w.occlusionState.contains(.visible) {
+            lastFrameTime = 0
+            return
+        }
         // Advance by the real time elapsed since the last frame (clamped so a
         // hitch or paused timer can't jump the animation), which keeps motion
         // smooth even when the framework's frame cadence wobbles.

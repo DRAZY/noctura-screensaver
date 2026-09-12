@@ -145,19 +145,35 @@ final class AuroraRenderer {
     /// callers never crash on a nil drawable.
     @discardableResult
     func render(to layer: CAMetalLayer) -> Bool {
-        guard layer.drawableSize.width > 0, layer.drawableSize.height > 0,
-              let drawable = layer.nextDrawable(),
-              let cmd = queue.makeCommandBuffer() else {
-            return false
+        // autoreleasepool is load-bearing: drawables/command buffers are
+        // autoreleased, and the screensaver appex's runloop can be slow to
+        // drain — without an explicit pool they pile up as phantom memory.
+        autoreleasepool {
+            guard layer.drawableSize.width > 0, layer.drawableSize.height > 0,
+                  let drawable = layer.nextDrawable(),
+                  let cmd = queue.makeCommandBuffer() else {
+                return false
+            }
+            encodeFrame(into: cmd, target: drawable.texture)
+            cmd.addCompletedHandler { [gpuFrameTimeLock] buffer in
+                let span = buffer.gpuEndTime - buffer.gpuStartTime
+                if span > 0 { gpuFrameTimeLock.withLock { $0 = span } }
+            }
+            cmd.present(drawable)
+            cmd.commit()
+            return true
         }
-        encodeFrame(into: cmd, target: drawable.texture)
-        cmd.addCompletedHandler { [gpuFrameTimeLock] buffer in
-            let span = buffer.gpuEndTime - buffer.gpuStartTime
-            if span > 0 { gpuFrameTimeLock.withLock { $0 = span } }
-        }
-        cmd.present(drawable)
-        cmd.commit()
-        return true
+    }
+
+    /// Drop every lazily-built heavyweight scene resource (fluid sim textures,
+    /// line-state MRTs, accumulators, the 60k-point cloud). Called from
+    /// stopAnimation so the long-lived, leak-prone legacyScreenSaver host keeps
+    /// almost nothing resident between activations; scenes rebuild on demand.
+    func releaseSceneResources() {
+        fluxFluid = nil
+        fluxTried = false
+        particleSwarm = nil
+        swarmTried = false
     }
 
     /// Encode one frame's scene into `target`. This is the SINGLE scene-dispatch
