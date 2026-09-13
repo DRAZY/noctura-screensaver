@@ -504,8 +504,11 @@ final class AuroraView: ScreenSaverView {
 
     override func animateOneFrame() {
         // The host can keep ticking this after dismissal (Sonoma keeps the appex
-        // alive) or while fully covered. Never render what nobody can see.
-        if let w = window, !w.isVisible || !w.occlusionState.contains(.visible) {
+        // alive). Gate on the framework's own start/stop state — NOT on window
+        // visibility or occlusionState, which never report .visible for the
+        // appex's remoted window and thus blanked the live saver when used here
+        // (v0.7.0 regression).
+        if !isAnimating {
             lastFrameTime = 0
             return
         }
