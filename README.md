@@ -11,6 +11,13 @@
 [![CI](https://github.com/DRAZY/noctura-screensaver/actions/workflows/ci.yml/badge.svg)](../../actions)
 [![Downloads](https://img.shields.io/github/downloads/DRAZY/noctura-screensaver/total?color=2ea44f)](../../releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/DRAZY/noctura-screensaver?color=6d4aff)](../../stargazers)
+[![Last commit](https://img.shields.io/github/last-commit/DRAZY/noctura-screensaver?color=2ea44f)](../../commits/main)
+<br>
+![Tauri](https://img.shields.io/badge/Tauri-2-24C8D8?logo=tauri&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows-lightgrey)
 
 <img src="screenshots/hero.gif" width="760" alt="Flux Drift — a real fluid simulation, live">
 
